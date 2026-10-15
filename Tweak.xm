@@ -197,13 +197,14 @@ static void handleNetworkResponse(NSString *url, NSData *data) {
     }
 }
 
-// --- بروتوكول الاعتراض الشامل مع منع التكرار (Bypass Flag) ---
+// --- بروتوكول السيطرة المطلقة وإلغاء الجلسات الخارجية ---
 @interface UniversalNetworkProtocol : NSURLProtocol
 @end
 
 @implementation UniversalNetworkProtocol
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
-    if ([NSURLProtocol propertyForKey:@"UniversalHandledKey" inRequest:request] != nil) {
+    // منع معالجة طلباتنا الخاصة لمنع الحلقات اللانهائية
+    if ([NSURLProtocol propertyForKey:@"AbsoluteControlKey" inRequest:request] != nil) {
         return NO;
     }
     return YES;
@@ -215,9 +216,9 @@ static void handleNetworkResponse(NSString *url, NSData *data) {
 
 - (void)startLoading {
     NSMutableURLRequest *newRequest = [self.request mutableCopy];
-    [NSURLProtocol setProperty:@YES forKey:@"UniversalHandledKey" inRequest:newRequest];
+    [NSURLProtocol setProperty:@YES forKey:@"AbsoluteControlKey" inRequest:newRequest];
     
-    // حقن الترويسات المزورة تلقائياً
+    // حقن الترويسات المزورة إجبارياً
     [newRequest setValue:randomSpectrumIP() forHTTPHeaderField:@"X-Forwarded-For"];
     [newRequest setValue:randomSpectrumIP() forHTTPHeaderField:@"Client-IP"];
     [newRequest setValue:randomSpectrumDNS() forHTTPHeaderField:@"X-DNS-Server"];
@@ -227,18 +228,22 @@ static void handleNetworkResponse(NSString *url, NSData *data) {
     [newRequest setValue:@"Charter Communications" forHTTPHeaderField:@"X-ISP"];
     [newRequest setValue:randomOSVersion() forHTTPHeaderField:@"X-OS-Version"];
     
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
+    // تشغيل جلسة سرية خاصة بالبروتوكول حصراً لتنفيذ الطلب بالنيابة عن التطبيق وإلغاء أي جلسة أخرى
+    NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    config.protocolClasses = @[]; // منع تشغيل أي بروتوكولات أخرى داخل هذه الجلسة
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:config];
+    
     NSURLSessionDataTask *task = [session dataTaskWithRequest:newRequest completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (data) {
-            handleNetworkResponse(newRequest.URL.absoluteString, data);
-            [self.client URLProtocol:self didLoadData:data];
-        }
-        if (response) {
-            [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
-        }
         if (error) {
             [self.client URLProtocol:self didFailWithError:error];
         } else {
+            if (response) {
+                [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
+            }
+            if (data) {
+                handleNetworkResponse(newRequest.URL.absoluteString, data);
+                [self.client URLProtocol:self didLoadData:data];
+            }
             [self.client URLProtocolDidFinishLoading:self];
         }
     }];
@@ -288,24 +293,16 @@ static void handleNetworkResponse(NSString *url, NSData *data) {
 - (BOOL)isAdvertisingTrackingEnabled { return YES; }
 %end
 
-// --- حقن البروتوكول في جلسات النظام ---
+// --- إغلاق جلسات التطبيق الافتراضية وتوجيهها حصراً لبروتوكولنا ---
 %hook NSURLSessionConfiguration
 + (NSURLSessionConfiguration *)defaultSessionConfiguration {
     NSURLSessionConfiguration *config = %orig;
-    NSMutableArray *protocols = [config.protocolClasses mutableCopy] ?: [NSMutableArray array];
-    if (![protocols containsObject:[UniversalNetworkProtocol class]]) {
-        [protocols insertObject:[UniversalNetworkProtocol class] atIndex:0];
-        config.protocolClasses = protocols;
-    }
+    config.protocolClasses = @[[UniversalNetworkProtocol class]];
     return config;
 }
 + (NSURLSessionConfiguration *)ephemeralSessionConfiguration {
     NSURLSessionConfiguration *config = %orig;
-    NSMutableArray *protocols = [config.protocolClasses mutableCopy] ?: [NSMutableArray array];
-    if (![protocols containsObject:[UniversalNetworkProtocol class]]) {
-        [protocols insertObject:[UniversalNetworkProtocol class] atIndex:0];
-        config.protocolClasses = protocols;
-    }
+    config.protocolClasses = @[[UniversalNetworkProtocol class]];
     return config;
 }
 %end
