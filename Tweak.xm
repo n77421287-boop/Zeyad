@@ -5,17 +5,17 @@
 #import <AdSupport/AdSupport.h>
 #import <AppTrackingTransparency/AppTrackingTransparency.h>
 
-// --- الثوابت وإعدادات الحسابات الثلاثة ---
+// --- الثوابت وإعدادات الحسابات الثلاثة مرقمة ومرتبة بدقة ---
 static NSString * const kKeychainAccount = @"com.tempnum.virtualnumber.deviceUUID";
 static NSString * const kKeychainGroup   = @"3J96GNXKKU.*";
 
-static NSString * const kAccount1_UUID   = @"5A82BF9F-3EA4-4CB5-AD3A-593553C1E15C";
-static NSString * const kAccount2_UUID   = @"2BEE80E4-E20A-432B-879A-A98E2B8BC10A";
-static NSString * const kAccount3_UUID   = @"7F4D0094-0107-44B6-9D4A-63FBCE2A5956";
+static NSString * const kAccount1_UUID   = @"5A82BF9F-3EA4-4CB5-AD3A-593553C1E15C"; // الحساب الأول (1)
+static NSString * const kAccount2_UUID   = @"2BEE80E4-E20A-432B-879A-A98E2B8BC10A"; // الحساب الثاني (2)
+static NSString * const kAccount3_UUID   = @"7F4D0094-0107-44B6-9D4A-63FBCE2A5956"; // الحساب الثالث (3)
 
 static BOOL isSwitchAlertShown = NO;
 
-// --- واجهة النافذة العائمة الحديثة (FLEX Style Overlay) ---
+// --- واجهة النافذة العائمة الحديثة (FLEX Style Overlay - شفافة ولا تعيق اللمس) ---
 @interface FLEXNetworkViewerWindow : NSObject
 + (instancetype)sharedInstance;
 - (void)appendLog:(NSString * _Nullable)logText;
@@ -119,7 +119,6 @@ static NSString *randomOSVersion() {
     NSArray *versions = @[@"16.5", @"17.0", @"17.4", @"17.5.1", @"18.0"];
     return versions[arc4random_uniform((uint32_t)[versions count])];
 }
-static NSString *randomDeviceModel() { return @"iPhone15,2"; }
 static NSString *randomLocaleIdentifier() { return @"en_US"; }
 static NSString *generateTimestamp() {
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
@@ -127,7 +126,7 @@ static NSString *generateTimestamp() {
     return [formatter stringFromDate:[NSDate date]];
 }
 
-// --- مسار حالة التبديل ---
+// --- مسار حالة التبديل والتسلسل ---
 NSString *getStatePlistPath(void) {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES);
     return [[paths firstObject] stringByAppendingPathComponent:@"AccountSwitchState.plist"];
@@ -288,7 +287,7 @@ static void handleResponsePayload(NSURLRequest *request, NSData *data) {
     }
 }
 
-// --- حقن الترويسات في الطلب الأصلي ---
+// --- حقن الترويسات في الطلب الأصلي (In-Place) ---
 static NSURLRequest *injectFLEXObserverHeaders(NSURLRequest *request) {
     if (![request isKindOfClass:[NSURLRequest class]]) return request;
     
