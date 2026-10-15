@@ -18,89 +18,6 @@ static NSString * const kAccount3_UUID   = @"7F4D0094-0107-44B6-9D4A-63FBCE2A595
 
 static BOOL isSwitchAlertShown = NO;
 
-// --- واجهة النافذة العائمة الخاصة بعرض سجلات الشبكة (على طريقة FLEX) ---
-@interface FLEXNetworkViewerWindow : NSObject
-+ (instancetype)sharedInstance;
-- (void)appendLog:(NSString *)logText;
-@end
-
-@implementation FLEXNetworkViewerWindow {
-    UIWindow *_floatingWindow;
-    UITextView *_logTextView;
-}
-
-+ (instancetype)sharedInstance {
-    static FLEXNetworkViewerWindow *shared = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        shared = [[FLEXNetworkViewerWindow alloc] init];
-    });
-    return shared;
-}
-
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        [self setupUI];
-    }
-    return self;
-}
-
-- (void)setupUI {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (_floatingWindow) return;
-        
-        UIWindowScene *scene = nil;
-        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]]) {
-                scene = (UIWindowScene *)s;
-                break;
-            }
-        }
-        
-        if (scene) {
-            _floatingWindow = [[UIWindow alloc] initWithWindowScene:scene];
-        } else {
-            _floatingWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        }
-        
-        _floatingWindow.windowLevel = UIWindowLevelAlert + 9999;
-        _floatingWindow.backgroundColor = [UIColor clearColor];
-        _floatingWindow.hidden = NO;
-        
-        UIViewController *vc = [[UIViewController alloc] init];
-        _floatingWindow.rootViewController = vc;
-        
-        _logTextView = [[UITextView alloc] initWithFrame:CGRectMake(15, 45, vc.view.bounds.size.width - 30, 180)];
-        _logTextView.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
-        _logTextView.textColor = [UIColor greenColor];
-        _logTextView.font = [UIFont fontWithName:@"Courier" size:10.0];
-        _logTextView.editable = NO;
-        _logTextView.layer.cornerRadius = 6;
-        _logTextView.layer.borderWidth = 1.0;
-        _logTextView.layer.borderColor = [[UIColor greenColor] CGColor];
-        
-        [vc.view addSubview:_logTextView];
-    });
-}
-
-- (void)appendLog:(NSString *)logText {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!_logTextView) [self setupUI];
-        NSString *current = _logTextView.text ?: @"";
-        NSString *updated = [NSString stringWithFormat:@"%@\n%@", current, logText];
-        if (updated.length > 6000) {
-            updated = [updated substringFromIndex:updated.length - 6000];
-        }
-        _logTextView.text = updated;
-        if (updated.length > 0) {
-            [_logTextView scrollRangeToVisible:NSMakeRange(_logTextView.text.length - 1, 1)];
-        }
-    });
-}
-
-@end
-
 // --- دوال مساعدة لإنشاء هويات عشوائية وتزوير البيئة ---
 static NSString *randomUUID() {
     return [[NSUUID UUID] UUIDString];
@@ -364,14 +281,9 @@ void checkAndEnforceValidAccount(void) {
     }
 }
 
-// --- معالجة البيانات وإرسالها للشاشة العائمة وعلى طريقة FLEX ---
+// --- معالجة البيانات والتحقق من النقاط في الخلفية ---
 void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSInteger statusCode, NSData *data, NSError *error) {
     checkAndEnforceValidAccount();
-
-    if (url) {
-        NSString *logLine = [NSString stringWithFormat:@"[%@] %ld %@ -> %@", method, (long)statusCode, url, error ? @"[Error]" : @"[OK]"];
-        [[FLEXNetworkViewerWindow sharedInstance] appendLog:logLine];
-    }
 
     if (!url || ![url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
         return;
@@ -399,6 +311,7 @@ void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSIntege
 // --- بروتوكول شبكة اعتراض الطلبات (على طريقة FLEX الأصلية عبر NSURLProtocol) ---
 @interface GodModeNetworkProtocol : NSURLProtocol <NSURLSessionDataDelegate>
 @property (nonatomic, strong) NSURLSessionDataTask *task;
+@property (nonatomic, strong) NSMutableData *responseData;
 @end
 
 @implementation GodModeNetworkProtocol
@@ -442,6 +355,8 @@ void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSIntege
     [mutableReq setValue:dynModel forHTTPHeaderField:@"X-Device-Model"];
     [mutableReq setValue:[NSString stringWithFormat:@"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", dynOS] forHTTPHeaderField:@"User-Agent"];
 
+    self.responseData = [NSMutableData data];
+
     NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
     NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];
     
@@ -460,13 +375,13 @@ void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSIntege
 }
 
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
+    [self.responseData appendData:data];
     [self.client URLProtocol:self didLoadData:data];
 }
 
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
     NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)task.response;
-    NSData *taskData = nil; 
-    logGodModeEvent(@"FLEXProtocol", task.originalRequest.HTTPMethod, task.originalRequest.URL.absoluteString, httpResp.statusCode, taskData, error);
+    logGodModeEvent(@"FLEXProtocol", task.originalRequest.HTTPMethod, task.originalRequest.URL.absoluteString, httpResp.statusCode, self.responseData, error);
 
     if (error) {
         [self.client URLProtocol:self didFailWithError:error];
@@ -572,11 +487,10 @@ void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSIntege
 }
 %end
 
-// --- تهيئة التويك وعرض المربع العائم عند التشغيل ---
+// --- تهيئة التويك في الخلفية عند التشغيل ---
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [NSURLProtocol registerClass:[GodModeNetworkProtocol class]];
-        [FLEXNetworkViewerWindow sharedInstance];
         checkAndEnforceValidAccount();
     });
 }
