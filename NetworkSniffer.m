@@ -529,8 +529,8 @@ void checkAndEnforceValidAccount(void) {
     }
 }
 
-// --- تهيئة التويك عند بدء التشغيل ---
-%ctor {
+// --- التهيئة البديلة (بدون استخدام رموز Logos المعمارية لملفات الـ .m) ---
+__attribute__((constructor)) static void initializer(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         checkAndEnforceValidAccount();
         setupOverlayButton();
