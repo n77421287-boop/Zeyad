@@ -3,10 +3,6 @@
 #import <objc/runtime.h>
 #import <WebKit/WebKit.h>
 #import <Security/Security.h>
-#import <AdSupport/AdSupport.h>
-#import <AppTrackingTransparency/AppTrackingTransparency.h>
-#import <CoreTelephony/CTTelephonyNetworkInfo.h>
-#import <CoreTelephony/CTCarrier.h>
 
 // --- الثوابت الأساسية ---
 static NSString * const kKeychainAccount       = @"com.tempnum.virtualnumber.deviceUUID";
@@ -18,41 +14,6 @@ static NSString * const kDefaultAcc1_UUID = @"1A2B3C4D-5E5F-7A8B-9C0F-1E2F3A4B5C
 static NSString * const kDefaultAcc2_UUID = @"2B3C4E5E-6F75-8B9C-0D1E-2F3A4B5C6DFE";
 static NSString * const kDefaultAcc3_UUID = @"3C4D5E6F-7A85-9C0D-1E2F-3A4B5C6D7F8F";
 static NSString * const kDefaultAcc4_UUID = @"4D5E6F7A-8B95-0C1D-2E3F-4A5B6C7DFE9F";
-
-// --- دوال مساعدة لإنشاء هويات عشوائية ---
-static NSString *randomUUID() {
-    return [[NSUUID UUID] UUIDString];
-}
-
-static NSString *randomIMEI() {
-    int r1 = 10 + arc4random_uniform(89);
-    long long r2 = 10000000000LL + (long long)(arc4random_uniform(900000000));
-    return [NSString stringWithFormat:@"%d%lld", r1, r2];
-}
-
-static NSString *randomOSVersion() {
-    NSArray *versions = @[@"16.1", @"16.5", @"17.0", @"17.2", @"17.4", @"17.5.1", @"18.0", @"18.1", @"18.2", @"18.3"];
-    return versions[arc4random_uniform((uint32_t)[versions count])];
-}
-
-static NSString *randomLocaleIdentifier() {
-    NSArray *locales = @[@"en_US", @"en_GB", @"en_CA", @"es_US", @"fr_FR", @"de_DE", @"ja_JP", @"it_IT"];
-    return locales[arc4random_uniform((uint32_t)[locales count])];
-}
-
-static NSString *randomTimeZoneName() {
-    NSArray *timeZones = @[@"America/New_York", @"America/Chicago", @"America/Los_Angeles", @"Europe/London", @"Europe/Paris", @"Asia/Tokyo", @"Asia/Dubai"];
-    return timeZones[arc4random_uniform((uint32_t)[timeZones count])];
-}
-
-static float randomBatteryLevel() {
-    return (float)(15 + arc4random_uniform(84)) / 100.0f;
-}
-
-static UIDeviceBatteryState randomBatteryState() {
-    NSArray *states = @[@(UIDeviceBatteryStateCharging), @(UIDeviceBatteryStateUnplugged), @(UIDeviceBatteryStateFull)];
-    return (UIDeviceBatteryState)[states[arc4random_uniform((uint32_t)[states count])] integerValue];
-}
 
 // --- مسار ملف الحالة ---
 NSString *getStatePlistPath(void) {
@@ -312,11 +273,6 @@ void performSequentialAutoSwitch(void) {
 @property (nonatomic, strong) UILabel *timerLabel;
 @property (nonatomic, strong) NSTimer *countdownTimer;
 @property (nonatomic, assign) NSInteger remainingSeconds;
-- (void)openManagerMenu;
-- (void)openEditUUIDsPrompt:(UIViewController *)parentVC;
-- (void)updateTimerDisplay;
-- (void)startCountdownEngine;
-- (void)tickerStep;
 @end
 
 @implementation AccountManagerButtonView
@@ -572,73 +528,6 @@ void checkAndEnforceValidAccount(void) {
         saveUUIDToKeychain(acc1);
     }
 }
-
-// --- التزوير الديناميكي والعشوائي لبيئة الجهاز ---
-%hook UIDevice
-- (NSUUID *)identifierForVendor {
-    return [[NSUUID alloc] initWithUUIDString:randomUUID()];
-}
-- (NSString *)systemVersion {
-    return randomOSVersion();
-}
-- (NSString *)model {
-    return @"iPhone";
-}
-- (NSString *)localizedModel {
-    return @"iPhone";
-}
-- (NSString *)uniqueIdentifier {
-    return randomIMEI();
-}
-- (BOOL)isBatteryMonitoringEnabled {
-    return YES;
-}
-- (float)batteryLevel {
-    return randomBatteryLevel();
-}
-- (UIDeviceBatteryState)batteryState {
-    return randomBatteryState();
-}
-%end
-
-%hook NSLocale
-+ (NSLocale *)currentLocale {
-    return [[NSLocale alloc] initWithLocaleIdentifier:randomLocaleIdentifier()];
-}
-- (NSString *)objectForKey:(NSLocaleKey)key {
-    return %orig;
-}
-%end
-
-%hook NSTimeZone
-+ (NSTimeZone *)localTimeZone {
-    return [NSTimeZone timeZoneWithName:randomTimeZoneName()];
-}
-+ (NSTimeZone *)systemTimeZone {
-    return [NSTimeZone timeZoneWithName:randomTimeZoneName()];
-}
-%end
-
-%hook ATTrackingManager
-+ (NSUInteger)trackingAuthorizationStatus {
-    return 3;
-}
-%end
-
-%hook ASIdentifierManager
-- (NSUUID *)advertisingIdentifier {
-    return [[NSUUID alloc] initWithUUIDString:randomUUID()];
-}
-- (BOOL)isAdvertisingTrackingEnabled {
-    return YES;
-}
-%end
-
-%hook CTTelephonyNetworkInfo
-- (NSDictionary *)serviceSubscriberCellularProviders {
-    return @{};
-}
-%end
 
 // --- تهيئة التويك عند بدء التشغيل ---
 %ctor {
