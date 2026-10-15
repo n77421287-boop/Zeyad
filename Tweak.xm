@@ -1,607 +1,534 @@
-// ═══════════════════════════════════════════════════════════════════════════
-// GhostIdentity v3.2 — Zero Static Values (SDK-compatible)
-// ═══════════════════════════════════════════════════════════════════════════
-
-#import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <AdSupport/AdSupport.h>
-#import <Security/Security.h>
-#import <SystemConfiguration/SystemConfiguration.h>
+#import <Foundation/Foundation.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
+#import <WebKit/WebKit.h>
+#import <Security/Security.h>
+#import <AdSupport/AdSupport.h>
+#import <AppTrackingTransparency/AppTrackingTransparency.h>
+#import <netdb.h>
+#import <arpa/inet.h>
 
-#include <sys/socket.h>
-#include <sys/sysctl.h>
-#include <sys/ioctl.h>
-#include <netinet/in.h>
-#include <net/if.h>
-#include <net/if_dl.h>
-#include <net/if_var.h>
-#include <arpa/inet.h>
-#include <ifaddrs.h>
-#include <netdb.h>
-#include <dlfcn.h>
-#include <mach/mach.h>
-#include <mach/mach_time.h>
-#include <random>
-#include <chrono>
-#include <mutex>
-#include <vector>
-#include <string>
-#include <algorithm>
+// --- الثوابت وإعدادات الحسابات الثلاثة مرقمة ومرتبة بدقة ---
+static NSString * const kKeychainAccount = @"com.tempnum.virtualnumber.deviceUUID";
+static NSString * const kKeychainGroup   = @"3J96GNXKKU.*";
 
-// ─── فحص وجود net/route.h (غير موجود في بعض SDKs) ──────────────────
-#if __has_include(<net/route.h>)
-    #include <net/route.h>
-    #define GHOST_HAS_ROUTE_H 1
-#else
-    #define GHOST_HAS_ROUTE_H 0
-    // تعريف يدوي بديل لثابت RTM_IFINFO (قيمته 0xe في Darwin)
-    #ifndef RTM_IFINFO
-        #define RTM_IFINFO 0xe
-    #endif
-#endif
+static NSString * const kAccount1_UUID   = @"5A82BF9F-3EA4-4CB5-AD3A-593553C1E15C"; // الحساب الأول (1)
+static NSString * const kAccount2_UUID   = @"2BEE80E4-E20A-432B-879A-A98E2B8BC10A"; // الحساب الثاني (2)
+static NSString * const kAccount3_UUID   = @"7F4D0094-0107-44B6-9D4A-63FBCE2A5956"; // الحساب الثالث (3)
 
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 1 — GhostEngine
-// ═══════════════════════════════════════════════════════════════════════════
+static BOOL isSwitchAlertShown = NO;
 
-@interface GhostEngine : NSObject
-+ (instancetype)shared;
-- (NSString *)newUUID;
-- (NSString *)newIDFA;
-- (NSString *)newIDFV;
-- (NSString *)newMAC;
-- (NSString *)newSerial;
-- (NSString *)newRandomIP;
-- (NSString *)newRandomIPv6;
-- (NSString *)newUserAgent;
-- (NSString *)newSystemVersion;
-- (NSString *)newDeviceName;
-- (NSDictionary *)newHeaders;
-- (NSTimeInterval)newRotationInterval;
-@end
-
-@implementation GhostEngine {
-    std::mt19937_64 _rng;
-    std::mutex _lock;
+// --- دوال مساعدة لإنشاء هويات عشوائية وتزوير البيئة ---
+static NSString *randomUUID() {
+    return [[NSUUID UUID] UUIDString];
 }
 
-+ (instancetype)shared {
-    static GhostEngine *inst;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ inst = [[GhostEngine alloc] init]; });
-    return inst;
+static NSString *randomIMEI() {
+    int r1 = 10 + arc4random_uniform(89);
+    long long r2 = 10000000000LL + (long long)(arc4random_uniform(900000000));
+    return [NSString stringWithFormat:@"%d%lld", r1, r2];
 }
 
-- (uint64_t)gatherEntropy {
-    uint64_t e1 = mach_absolute_time();
-    uint64_t e2 = (uint64_t)[[NSDate date] timeIntervalSince1970];
-    uint64_t e3 = (uint64_t)arc4random();
-    uint64_t e4 = (uint64_t)arc4random();
-    uint64_t e5 = (uint64_t)(uintptr_t)&_rng;
-    uint64_t e6 = (uint64_t)getpid();
-    uint64_t e7 = (uint64_t)clock();
-    return e1 ^ (e2 << 13) ^ (e3 << 27) ^ (e4 << 41)
-         ^ (e5 << 7)  ^ (e6 << 51) ^ (e7 << 19);
+static NSString *randomSpectrumDNS() {
+    NSArray *dnsList = @[@"71.252.0.12", @"71.243.0.12", @"209.18.47.61", @"209.18.47.62", @"68.237.161.12"];
+    return dnsList[arc4random_uniform((uint32_t)[dnsList count])];
 }
 
-- (instancetype)init {
-    if ((self = [super init])) {
-        _rng.seed([self gatherEntropy]);
-        for (int i = 0; i < 32; i++) (void)_rng();
+static NSString *randomSpectrumIP() {
+    NSArray *subnets = @[@"172.59"];
+    NSString *subnet = subnets[arc4random_uniform((uint32_t)[subnets count])];
+    return [NSString stringWithFormat:@"%@.%d.%d", subnet, arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
+}
+
+static NSString *randomOSVersion() {
+    NSArray *versions = @[@"16.1", @"16.5", @"17.0", @"17.2", @"17.4", @"17.5.1", @"18.0"];
+    return versions[arc4random_uniform((uint32_t)[versions count])];
+}
+
+static NSString *randomDeviceModel() {
+    NSArray *models = @[@"iPhone14,2", @"iPhone14,3", @"iPhone15,2", @"iPhone15,3", @"iPhone16,1", @"iPhone16,2"];
+    return models[arc4random_uniform((uint32_t)[models count])];
+}
+
+static NSString *randomLocaleIdentifier() {
+    NSArray *locales = @[@"en_US", @"en_GB", @"en_CA", @"es_US", @"fr_FR"];
+    return locales[arc4random_uniform((uint32_t)[locales count])];
+}
+
+static NSString *generateTimestamp() {
+    NSDate *now = [NSDate date];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"];
+    return [formatter stringFromDate:now];
+}
+
+// --- مسار حالة التبديل والتسلسل ---
+NSString *getStatePlistPath(void) {
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES);
+    NSString *libraryDirectory = [paths firstObject];
+    return [libraryDirectory stringByAppendingPathComponent:@"AccountSwitchState.plist"];
+}
+
+// --- إدارة الـ Keychain المدمجة ---
+NSString *getAppCurrentUUIDFromKeychain(void) {
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrAccount: kKeychainAccount,
+        (__bridge id)kSecAttrAccessGroup: kKeychainGroup,
+        (__bridge id)kSecReturnData: (__bridge id)kCFBooleanTrue,
+        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne
+    };
+    CFTypeRef result = NULL;
+    if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) == noErr) {
+        NSData *data = (__bridge_transfer NSData *)result;
+        return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     }
-    return self;
+    return nil;
 }
 
-- (uint64_t)nextU64 {
-    std::lock_guard<std::mutex> g(_lock);
-    return _rng();
-}
-
-- (int)nextByte { return (int)([self nextU64] & 0xFF); }
-
-- (NSUInteger)nextInRange:(NSUInteger)min max:(NSUInteger)max {
-    if (max <= min) return min;
-    return min + (NSUInteger)([self nextU64] % (max - min + 1));
-}
-
-- (NSString *)newUUID {
-    unsigned char b[16];
-    uint64_t a = [self nextU64];
-    uint64_t c = [self nextU64];
-    memcpy(b, &a, 8);
-    memcpy(b + 8, &c, 8);
-
-    static const unsigned char versions[] = {1, 4, 6};
-    unsigned char ver = versions[(size_t)([self nextU64] % 3)];
-    b[6] = (b[6] & 0x0F) | (ver << 4);
-    b[8] = (b[8] & 0x3F) | 0x80;
-
-    BOOL upper = ([self nextU64] & 1) == 0;
-    NSString *fmt = upper
-        ? @"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X"
-        : @"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x";
-
-    return [NSString stringWithFormat:fmt,
-        b[0],b[1],b[2],b[3], b[4],b[5], b[6],b[7],
-        b[8],b[9], b[10],b[11],b[12],b[13],b[14],b[15]];
-}
-
-- (NSString *)newIDFA { return [self newUUID]; }
-- (NSString *)newIDFV { return [self newUUID]; }
-
-- (NSString *)newMAC {
-    unsigned char mac[6];
-    for (int i = 0; i < 6; i++) mac[i] = (unsigned char)[self nextByte];
-    mac[0] = (mac[0] & 0xFE) | 0x02;
-
-    NSUInteger style = [self nextInRange:0 max:3];
-    if (style == 0)
-        return [NSString stringWithFormat:@"%02X:%02X:%02X:%02X:%02X:%02X",
-                mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]];
-    if (style == 1)
-        return [NSString stringWithFormat:@"%02x-%02x-%02x-%02x-%02x-%02x",
-                mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]];
-    if (style == 2)
-        return [NSString stringWithFormat:@"%02X%02X%02X%02X%02X%02X",
-                mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]];
-    return [NSString stringWithFormat:@"%02x.%02x.%02x.%02x.%02x.%02x",
-            mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]];
-}
-
-- (NSString *)newSerial {
-    NSUInteger len = [self nextInRange:8 max:16];
-    static const char upperSet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    static const char digitSet[] = "0123456789";
-
-    NSMutableString *s = [NSMutableString stringWithCapacity:len];
-    for (NSUInteger i = 0; i < len; i++) {
-        BOOL useLetter = ([self nextU64] % 100) < 60;
-        if (useLetter) {
-            NSUInteger idx = [self nextInRange:0 max:25];
-            [s appendFormat:@"%c", upperSet[idx]];
-        } else {
-            NSUInteger idx = [self nextInRange:0 max:9];
-            [s appendFormat:@"%c", digitSet[idx]];
-        }
-    }
-    return s;
-}
-
-- (NSString *)newRandomIP {
-    int a, b, c, d;
-    do {
-        a = [self nextByte]; b = [self nextByte];
-        c = [self nextByte]; d = [self nextByte];
-    } while (
-        a == 0 || a == 10 || a == 127 || a == 255 ||
-        a == 172 || a == 192 || a == 224 || a == 100 ||
-        a == 169 || a == 198 || a >= 224
-    );
-    return [NSString stringWithFormat:@"%d.%d.%d.%d", a, b, c, d];
-}
-
-- (NSString *)newRandomIPv6 {
-    NSMutableString *s = [NSMutableString stringWithCapacity:40];
-    for (int g = 0; g < 8; g++) {
-        unsigned int v = (unsigned int)([self nextU64] & 0xFFFF);
-        [s appendFormat:@"%x", v];
-        if (g < 7) [s appendString:@":"];
-    }
-    return s;
-}
-
-- (NSString *)newUserAgent {
-    NSUInteger major = [self nextInRange:14 max:18];
-    NSUInteger minor = [self nextInRange:0 max:7];
-    NSUInteger patch = [self nextInRange:0 max:3];
-
-    NSUInteger wkMajor = 605;
-    NSUInteger wkMinor = [self nextInRange:1 max:9];
-    NSUInteger wkPatch = [self nextInRange:0 max:99];
-
-    NSUInteger buildLetter = [self nextInRange:0 max:25];
-    NSUInteger buildNum = [self nextInRange:100 max:999];
-
-    BOOL isPad = ([self nextU64] & 1);
-    NSString *deviceStr = isPad ? @"iPad" : @"iPhone";
-    NSString *cpuStr = isPad ? @"CPU OS" : @"CPU iPhone OS";
-
-    NSUInteger safariMajor = [self nextInRange:16 max:18];
-    NSUInteger safariMinor = [self nextInRange:0 max:9];
-    NSUInteger safariPatch = [self nextInRange:0 max:99];
-
-    return [NSString stringWithFormat:
-        @"Mozilla/5.0 (%@; %@ %lu_%lu_%lu like Mac OS X) "
-         "AppleWebKit/%lu.%lu.%lu (KHTML, like Gecko) "
-         "Version/%lu.%lu.%lu Mobile/%c%lu%c%c Safari/604.1",
-        deviceStr, cpuStr,
-        (unsigned long)major, (unsigned long)minor, (unsigned long)patch,
-        (unsigned long)wkMajor, (unsigned long)wkMinor, (unsigned long)wkPatch,
-        (unsigned long)safariMajor, (unsigned long)safariMinor, (unsigned long)safariPatch,
-        (char)('A' + buildLetter),
-        (unsigned long)buildNum,
-        (char)('A' + ([self nextU64] % 26)),
-        (char)('a' + ([self nextU64] % 26))];
-}
-
-- (NSString *)newSystemVersion {
-    NSUInteger major = [self nextInRange:14 max:18];
-    NSUInteger minor = [self nextInRange:0 max:7];
-    NSUInteger patch = [self nextInRange:0 max:3];
-    if (major >= 17 || patch == 0) {
-        return [NSString stringWithFormat:@"%lu.%lu",
-                (unsigned long)major, (unsigned long)minor];
-    }
-    return [NSString stringWithFormat:@"%lu.%lu.%lu",
-            (unsigned long)major, (unsigned long)minor, (unsigned long)patch];
-}
-
-- (NSString *)newDeviceName {
-    NSArray *prefixes = @[@"iPhone", @"iPad", @"iPod"];
-    NSString *prefix = prefixes[[self nextInRange:0 max:prefixes.count - 1]];
-
-    NSUInteger suffixLen = [self nextInRange:6 max:14];
-    static const char set[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    NSMutableString *suffix = [NSMutableString stringWithCapacity:suffixLen];
-    for (NSUInteger i = 0; i < suffixLen; i++) {
-        NSUInteger idx = [self nextInRange:0 max:35];
-        [suffix appendFormat:@"%c", set[idx]];
-    }
-
-    NSUInteger style = [self nextInRange:0 max:2];
-    if (style == 0) return [NSString stringWithFormat:@"%@-%@", prefix, suffix];
-    if (style == 1) return [NSString stringWithFormat:@"%@ %@", prefix, suffix];
-    return [NSString stringWithFormat:@"%@%@", prefix, suffix];
-}
-
-- (NSDictionary *)newHeaders {
-    NSArray *ipKeys = @[
-        @"X-Forwarded-For", @"X-Real-IP", @"X-Client-IP",
-        @"X-Originating-IP", @"X-Remote-IP", @"X-Remote-Addr",
-        @"Client-IP", @"CF-Connecting-IP", @"True-Client-IP",
-        @"X-Cluster-Client-IP", @"X-ProxyUser-Ip", @"Fastly-Client-IP",
-        @"X-Forwarded", @"Forwarded-For", @"X-Original-IP",
-        @"X-Originating-Address", @"X-Client-Address"
+void clearEntireKeychain(void) {
+    NSArray *secClasses = @[
+        (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecClassInternetPassword,
+        (__bridge id)kSecClassCertificate,
+        (__bridge id)kSecClassKey,
+        (__bridge id)kSecClassIdentity
     ];
-
-    NSMutableArray *shuffled = [ipKeys mutableCopy];
-    for (NSUInteger i = shuffled.count; i > 1; i--) {
-        NSUInteger j = [self nextInRange:0 max:i - 1];
-        [shuffled exchangeObjectAtIndex:i - 1 withObjectAtIndex:j];
+    
+    for (id secClass in secClasses) {
+        NSDictionary *spec = @{
+            (__bridge id)kSecClass: secClass,
+            (__bridge id)kSecAttrAccessGroup: kKeychainGroup
+        };
+        SecItemDelete((__bridge CFDictionaryRef)spec);
     }
+}
 
-    NSUInteger count = [self nextInRange:5 max:12];
-    if (count > shuffled.count) count = shuffled.count;
+void saveUUIDToKeychain(NSString *uuidString) {
+    NSData *data = [uuidString dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *addQuery = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrAccount: kKeychainAccount,
+        (__bridge id)kSecAttrAccessGroup: kKeychainGroup,
+        (__bridge id)kSecValueData: data
+    };
+    SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+}
 
-    NSMutableDictionary *headers = [NSMutableDictionary dictionaryWithCapacity:count];
-    for (NSUInteger i = 0; i < count; i++) {
-        NSString *key = shuffled[i];
+// --- مسح بيانات التطبيق كلياً عند الوصول للهدف فقط (مع استثناء ملف الحالة) ---
+void clearAllAppDataCompletely(void) {
+    NSString *bundleDomain = [[NSBundle mainBundle] bundleIdentifier];
+    if (bundleDomain) {
+        [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleDomain];
+    }
+    
+    [[NSURLCache sharedURLCache] removeAllCachedResponses];
+    [[NSURLCache sharedURLCache] setDiskCapacity:0];
+    [[NSURLCache sharedURLCache] setMemoryCapacity:0];
 
-        BOOL useV6 = ([self nextU64] % 5) == 0;
-        NSString *value = useV6 ? [self newRandomIPv6] : [self newRandomIP];
-
-        if ([key isEqualToString:@"Forwarded"] || [key isEqualToString:@"Forwarded-For"]) {
-            value = [NSString stringWithFormat:@"for=%@;proto=https;by=%@",
-                     value, [self newRandomIP]];
+    NSString *homeDir = NSHomeDirectory();
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSError *error = nil;
+    
+    NSString *libraryDir = [homeDir stringByAppendingPathComponent:@"Library"];
+    NSString *statePath = getStatePlistPath();
+    
+    NSArray *homeContents = [fm contentsOfDirectoryAtPath:homeDir error:&error];
+    for (NSString *item in homeContents) {
+        NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
+        if ([item isEqualToString:@"Library"]) {
+            NSArray *libraryContents = [fm contentsOfDirectoryAtPath:libraryDir error:&error];
+            for (NSString *libItem in libraryContents) {
+                NSString *libItemPath = [libraryDir stringByAppendingPathComponent:libItem];
+                if ([libItemPath isEqualToString:statePath]) {
+                    continue; 
+                }
+                [fm removeItemAtPath:libItemPath error:&error];
+            }
+        } else {
+            [fm removeItemAtPath:fullPath error:&error];
         }
-
-        headers[key] = value;
     }
-
-    headers[@"User-Agent"] = [self newUserAgent];
-    return headers;
-}
-
-- (NSTimeInterval)newRotationInterval {
-    NSUInteger seconds = [self nextInRange:5 max:45];
-    double frac = ([self nextU64] % 1000) / 1000.0;
-    return (NSTimeInterval)seconds + frac;
-}
-
-@end
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 2 — Device Identifier Hooks
-// ═══════════════════════════════════════════════════════════════════════════
-
-%hook ASIdentifierManager
-- (NSUUID *)advertisingIdentifier {
-    return [[NSUUID alloc] initWithUUIDString:[[GhostEngine shared] newIDFA]];
-}
-- (BOOL)isAdvertisingTrackingEnabled { return YES; }
-%end
-
-%hook UIDevice
-- (NSUUID *)identifierForVendor {
-    return [[NSUUID alloc] initWithUUIDString:[[GhostEngine shared] newIDFV]];
-}
-- (NSString *)name {
-    return [[GhostEngine shared] newDeviceName];
-}
-- (NSString *)systemVersion {
-    return [[GhostEngine shared] newSystemVersion];
-}
-- (NSString *)model {
-    NSArray *models = @[@"iPhone", @"iPad"];
-    NSUInteger idx = arc4random_uniform((uint32_t)models.count);
-    return models[idx];
-}
-%end
-
-%hook NSProcessInfo
-- (NSUUID *)globallyUniqueString {
-    return [[NSUUID alloc] initWithUUIDString:[[GhostEngine shared] newUUID]];
-}
-%end
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 3 — C Function Hooks
-// ═══════════════════════════════════════════════════════════════════════════
-
-// ─── helper: تحويل MAC string إلى 6 بايت ────────────────────────────
-static void GhostApplyMACToBuffer(NSString *mac, unsigned char *out) {
-    NSString *clean = [mac stringByReplacingOccurrencesOfString:@":" withString:@""];
-    clean = [clean stringByReplacingOccurrencesOfString:@"-" withString:@""];
-    clean = [clean stringByReplacingOccurrencesOfString:@"." withString:@""];
-    if (clean.length < 12) return;
-    for (int i = 0; i < 6; i++) {
-        NSString *pair = [clean substringWithRange:NSMakeRange(i * 2, 2)];
-        unsigned int v = 0;
-        sscanf([pair UTF8String], "%x", &v);
-        out[i] = (unsigned char)v;
-    }
-}
-
-// ─── getifaddrs ──────────────────────────────────────────────────────
-static int (*orig_getifaddrs)(struct ifaddrs **);
-
-static int hook_getifaddrs(struct ifaddrs **ifap) {
-    int ret = orig_getifaddrs(ifap);
-    if (ret != 0 || !ifap || !*ifap) return ret;
-
-    struct ifaddrs *ifa = *ifap;
-    while (ifa) {
-        if (ifa->ifa_name &&
-            (strcmp(ifa->ifa_name, "en0") == 0 ||
-             strcmp(ifa->ifa_name, "en1") == 0) &&
-            ifa->ifa_addr &&
-            ifa->ifa_addr->sa_family == AF_LINK) {
-
-            struct sockaddr_dl *sdl = (struct sockaddr_dl *)ifa->ifa_addr;
-            NSString *mac = [[GhostEngine shared] newMAC];
-            unsigned char bytes[6];
-            GhostApplyMACToBuffer(mac, bytes);
-            for (int i = 0; i < 6; i++) LLADDR(sdl)[i] = bytes[i];
-            sdl->sdl_alen = 6;
+    
+    NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
+    if ([fm fileExistsAtPath:groupDirBase]) {
+        NSArray *groupFolders = [fm contentsOfDirectoryAtPath:groupDirBase error:nil];
+        for (NSString *groupFolder in groupFolders) {
+            NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
+            [fm removeItemAtPath:groupPath error:&error];
         }
-        ifa = ifa->ifa_next;
     }
-    return ret;
 }
 
-// ─── sysctl (فقط إذا كان net/route.h متاحاً) ───────────────────────
-static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
+// --- المنطق التسلسلي الصارم والمضمون 100% (1 -> 2 -> 3 -> 1) ---
+NSString *getNextAccountUUID(void) {
+    NSString *path = getStatePlistPath();
+    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithContentsOfFile:path];
+    
+    if (!dict) {
+        dict = [NSMutableDictionary dictionary];
+    }
+    
+    NSInteger currentStep = 1;
+    if (dict[@"SequenceStep"] != nil) {
+        currentStep = [dict[@"SequenceStep"] integerValue];
+    }
+    
+    NSString *nextUUID = nil;
+    NSInteger nextStep = 1;
+    
+    if (currentStep == 1) {
+        nextUUID = kAccount2_UUID;
+        nextStep = 2;
+    } else if (currentStep == 2) {
+        nextUUID = kAccount3_UUID;
+        nextStep = 3;
+    } else {
+        nextUUID = kAccount1_UUID;
+        nextStep = 1;
+    }
+    
+    dict[@"SequenceStep"] = @(nextStep);
+    dict[@"WaitingForPointsChange"] = @YES;
+    [dict writeToFile:path atomically:YES];
+    
+    return nextUUID;
+}
 
-static int hook_sysctl(int *name, u_int namelen,
-                       void *oldp, size_t *oldlenp,
-                       void *newp, size_t newlen) {
-    int ret = orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
+BOOL shouldProcessPoints(NSInteger currentPoints) {
+    NSString *path = getStatePlistPath();
+    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
+    
+    if (dict && dict[@"WaitingForPointsChange"] != nil) {
+        BOOL waiting = [dict[@"WaitingForPointsChange"] boolValue];
+        if (waiting) {
+            if (currentPoints == 395) {
+                return NO;
+            } else {
+                NSMutableDictionary *mutableDict = [dict mutableCopy];
+                mutableDict[@"WaitingForPointsChange"] = @NO;
+                [mutableDict writeToFile:path atomically:YES];
+            }
+        }
+    }
+    return YES;
+}
 
-#if GHOST_HAS_ROUTE_H
-    if (ret == 0 && oldp && namelen >= 6 &&
-        name[0] == CTL_NET && name[1] == PF_ROUTE &&
-        name[4] == NET_RT_IFLIST && name[5] == 0) {
-
-        struct if_msghdr *ifm = (struct if_msghdr *)oldp;
-        char *end = (char *)oldp + (oldlenp ? *oldlenp : 0);
-
-        while ((char *)ifm < end && ifm->ifm_msglen > 0) {
-            if (ifm->ifm_type == RTM_IFINFO) {
-                struct sockaddr_dl *sdl = (struct sockaddr_dl *)(ifm + 1);
-                if (sdl->sdl_family == AF_LINK && sdl->sdl_alen == 6) {
-                    NSString *mac = [[GhostEngine shared] newMAC];
-                    unsigned char bytes[6];
-                    GhostApplyMACToBuffer(mac, bytes);
-                    char *addr = LLADDR(sdl);
-                    for (int i = 0; i < 6; i++) addr[i] = bytes[i];
+// --- تنفيذ عملية التبديل والحذف (تتم حصراً عند الوصول لـ 395 نقطة) ---
+void performAccountSwitchAndAlert(void) {
+    if (isSwitchAlertShown) return;
+    isSwitchAlertShown = YES;
+    
+    NSString *nextUUID = getNextAccountUUID();
+    
+    clearAllAppDataCompletely();
+    clearEntireKeychain();
+    saveUUIDToKeychain(nextUUID);
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *keyWindow = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                    UIWindowScene *windowScene = (UIWindowScene *)scene;
+                    for (UIWindow *w in windowScene.windows) {
+                        if (w.isKeyWindow) {
+                            keyWindow = w;
+                            break;
+                        }
+                    }
                 }
             }
-            ifm = (struct if_msghdr *)((char *)ifm + ifm->ifm_msglen);
         }
-    }
-#endif
-    return ret;
-}
-
-// ─── connect ─────────────────────────────────────────────────────────
-static int (*orig_connect)(int, const struct sockaddr *, socklen_t);
-
-static int hook_connect(int fd, const struct sockaddr *addr, socklen_t len) {
-    if (!addr || addr->sa_family != AF_INET) {
-        return orig_connect(fd, addr, len);
-    }
-    return orig_connect(fd, addr, len);
-}
-
-// ─── getaddrinfo ─────────────────────────────────────────────────────
-static int (*orig_getaddrinfo)(const char *, const char *,
-                               const struct addrinfo *, struct addrinfo **);
-
-static int hook_getaddrinfo(const char *node, const char *service,
-                            const struct addrinfo *hints,
-                            struct addrinfo **res) {
-    return orig_getaddrinfo(node, service, hints, res);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 4 — HTTP Header Injection
-// ═══════════════════════════════════════════════════════════════════════════
-
-static void GhostInjectHeaders(NSMutableURLRequest *req) {
-    if (!req) return;
-
-    NSDictionary *h = [[GhostEngine shared] newHeaders];
-
-    NSArray *keys = [h allKeys];
-    NSMutableArray *shuffled = [keys mutableCopy];
-    for (NSUInteger i = shuffled.count; i > 1; i--) {
-        NSUInteger j = arc4random_uniform((uint32_t)i);
-        [shuffled exchangeObjectAtIndex:i - 1 withObjectAtIndex:j];
-    }
-
-    for (NSString *k in shuffled) {
-        if ([k isEqualToString:@"User-Agent"] &&
-            [req valueForHTTPHeaderField:@"User-Agent"] != nil) {
-            continue;
+        if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+        
+        UIViewController *rootVC = keyWindow.rootViewController;
+        while (rootVC.presentedViewController) {
+            rootVC = rootVC.presentedViewController;
         }
-        [req setValue:h[k] forHTTPHeaderField:k];
-    }
-}
-
-%hook __NSCFURLSession
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request
-                            completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
-    NSMutableURLRequest *m = [request mutableCopy];
-    GhostInjectHeaders(m);
-    return %orig(m, completionHandler);
-}
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request {
-    NSMutableURLRequest *m = [request mutableCopy];
-    GhostInjectHeaders(m);
-    return %orig(m);
-}
-%end
-
-%hook NSURLConnection
-+ (NSURLConnection *)connectionWithRequest:(NSURLRequest *)request
-                                  delegate:(id)delegate {
-    NSMutableURLRequest *m = [request mutableCopy];
-    GhostInjectHeaders(m);
-    return %orig(m, delegate);
-}
-+ (NSData *)sendSynchronousRequest:(NSURLRequest *)request
-                 returningResponse:(NSURLResponse **)response
-                             error:(NSError **)error {
-    NSMutableURLRequest *m = [request mutableCopy];
-    GhostInjectHeaders(m);
-    return %orig(m, response, error);
-}
-%end
-
-// ─── CFNetwork Layer ─────────────────────────────────────────────────
-typedef struct __CFHTTPMessage *CFHTTPMessageRef;
-typedef struct __CFReadStream *CFReadStreamRef;
-
-static CFReadStreamRef (*orig_CFReadStreamCreateForHTTPRequest)(
-    CFAllocatorRef, CFHTTPMessageRef);
-
-static CFReadStreamRef hook_CFReadStreamCreateForHTTPRequest(
-    CFAllocatorRef alloc, CFHTTPMessageRef req) {
-    if (req) {
-        NSDictionary *h = [[GhostEngine shared] newHeaders];
-        NSArray *keys = [h allKeys];
-        NSMutableArray *shuffled = [keys mutableCopy];
-        for (NSUInteger i = shuffled.count; i > 1; i--) {
-            NSUInteger j = arc4random_uniform((uint32_t)i);
-            [shuffled exchangeObjectAtIndex:i - 1 withObjectAtIndex:j];
+        
+        // تم تصحيح اسم الدالة هنا بضافة with في المنتصف
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🔄 تم التبديل التسلسلي بنجاح"
+                                                                   message:@"تم الوصول إلى 395 نقطة، والانتقال للحساب التالي بالترتيب الدقيق.\n\nسيتم إغلاق التطبيق الآن..."
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+        
+        if (rootVC) {
+            [rootVC presentViewController:alert animated:YES completion:^{
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    exit(0);
+                });
+            }];
+        } else {
+            exit(0);
         }
-        for (NSString *k in shuffled) {
-            CFHTTPMessageSetHeaderFieldValue(req,
-                (__bridge CFStringRef)k,
-                (__bridge CFStringRef)h[k]);
-        }
-    }
-    return orig_CFReadStreamCreateForHTTPRequest(alloc, req);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 5 — Rotation Scheduler
-// ═══════════════════════════════════════════════════════════════════════════
-
-@interface GhostRotationScheduler : NSObject
-@property (nonatomic, strong) NSTimer *timer;
-- (void)start;
-@end
-
-@implementation GhostRotationScheduler
-
-+ (instancetype)shared {
-    static GhostRotationScheduler *inst;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ inst = [[GhostRotationScheduler alloc] init]; });
-    return inst;
-}
-
-- (void)start {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self scheduleNext];
     });
 }
 
-- (void)scheduleNext {
-    NSTimeInterval interval = [[GhostEngine shared] newRotationInterval];
-    NSLog(@"[GhostIdentity] next rotation in %.3f seconds", interval);
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:interval
-                                                  target:self
-                                                selector:@selector(fire:)
-                                                userInfo:nil
-                                                 repeats:NO];
+// --- التحقق من وجود حساب صالح في الـ Keychain بدون مسح البيانات عند الفتح العادي ---
+void checkAndEnforceValidAccount(void) {
+    NSString *currentUUID = getAppCurrentUUIDFromKeychain();
+    if (![currentUUID isEqualToString:kAccount1_UUID] && 
+        ![currentUUID isEqualToString:kAccount2_UUID] && 
+        ![currentUUID isEqualToString:kAccount3_UUID]) {
+        
+        clearEntireKeychain();
+        saveUUIDToKeychain(kAccount1_UUID);
+        
+        NSString *path = getStatePlistPath();
+        NSDictionary *dict = @{ 
+            @"SequenceStep": @(1), 
+            @"WaitingForPointsChange": @NO 
+        };
+        [dict writeToFile:path atomically:YES];
+    }
 }
 
-- (void)fire:(NSTimer *)t {
-    [self scheduleNext];
-}
+void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSInteger statusCode, NSData *data, NSError *error) {
+    checkAndEnforceValidAccount();
 
-@end
+    if (!url || ![url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
+        return;
+    }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// SECTION 6 — Constructor
-// ═══════════════════════════════════════════════════════════════════════════
-
-%ctor {
-    @autoreleasepool {
-        NSLog(@"[GhostIdentity] ─────────────────────────────");
-        NSLog(@"[GhostIdentity] v3.2 booting...");
-
-        (void)[GhostEngine shared];
-
-        MSHookFunction((void *)getifaddrs,
-                       (void *)hook_getifaddrs,
-                       (void **)&orig_getifaddrs);
-        NSLog(@"[GhostIdentity] ✓ getifaddrs hooked");
-
-        MSHookFunction((void *)sysctl,
-                       (void *)hook_sysctl,
-                       (void **)&orig_sysctl);
-        NSLog(@"[GhostIdentity] ✓ sysctl hooked (route.h=%d)", GHOST_HAS_ROUTE_H);
-
-        MSHookFunction((void *)connect,
-                       (void *)hook_connect,
-                       (void **)&orig_connect);
-        NSLog(@"[GhostIdentity] ✓ connect hooked");
-
-        MSHookFunction((void *)getaddrinfo,
-                       (void *)hook_getaddrinfo,
-                       (void **)&orig_getaddrinfo);
-        NSLog(@"[GhostIdentity] ✓ getaddrinfo hooked");
-
-        void *cf = dlopen("/System/Library/Frameworks/CFNetwork.framework/CFNetwork",
-                          RTLD_LAZY);
-        if (cf) {
-            void *sym = dlsym(cf, "CFReadStreamCreateForHTTPRequest");
-            if (sym) {
-                MSHookFunction(sym,
-                    (void *)hook_CFReadStreamCreateForHTTPRequest,
-                    (void **)&orig_CFReadStreamCreateForHTTPRequest);
-                NSLog(@"[GhostIdentity] ✓ CFNetwork hooked");
+    if (data) {
+        NSError *jsonError = nil;
+        NSDictionary *jsonDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+        if (!jsonError && [jsonDict isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *dataObj = jsonDict[@"data"];
+            NSDictionary *pointsData = dataObj[@"pointsData"];
+            NSNumber *pointsVal = pointsData[@"points"];
+            
+            if (pointsVal) {
+                NSInteger currentPoints = [pointsVal integerValue];
+                if (!shouldProcessPoints(currentPoints)) return;
+                if (currentPoints >= 395) {
+                    performAccountSwitchAndAlert();
+                }
             }
         }
-
-        [[GhostRotationScheduler shared] start];
-
-        NSLog(@"[GhostIdentity] Engine ready ✅");
-        NSLog(@"[GhostIdentity] ─────────────────────────────");
     }
+}
+
+// --- بروتوكول شبكة اعتراض النقاط ---
+@interface GodModeNetworkProtocol : NSURLProtocol
+@end
+
+@implementation GodModeNetworkProtocol
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+    NSString *url = request.URL.absoluteString;
+    if (url && [url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
+        if ([NSURLProtocol propertyForKey:@"GodModeHandled" inRequest:request] == nil) {
+            return YES;
+        }
+    }
+    return NO;
+}
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
+    NSMutableURLRequest *mutableReq = [request mutableCopy];
+    [NSURLProtocol setProperty:@YES forKey:@"GodModeHandled" inRequest:mutableReq];
+    return mutableReq;
+}
+- (void)startLoading {
+    NSMutableURLRequest *newReq = [self.request mutableCopy];
+    [NSURLProtocol setProperty:@YES forKey:@"GodModeHandled" inRequest:newReq];
+    
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
+    NSURLSessionDataTask *task = [session dataTaskWithRequest:newReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+        logGodModeEvent(@"Protocol", newReq.HTTPMethod, newReq.URL.absoluteString, httpResp.statusCode, data, error);
+        
+        if (data) [self.client URLProtocol:self didLoadData:data];
+        if (response) [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
+        if (error) [self.client URLProtocol:self didFailWithError:error];
+        else [self.client URLProtocolDidFinishLoading:self];
+    }];
+    [task resume];
+}
+- (void)stopLoading {}
+@end
+
+// --- تخطي شاشات الترحيب والشروط تلقائياً عبر NSUserDefaults ---
+%hook NSUserDefaults
+
+- (BOOL)boolForKey:(NSString *)defaultName {
+    if ([defaultName isEqualToString:@"onboarding_completed"] ||
+        [defaultName rangeOfString:@"onboard" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [defaultName rangeOfString:@"term" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [defaultName rangeOfString:@"agree" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        return YES;
+    }
+    return %orig;
+}
+
+- (id)objectForKey:(NSString *)defaultName {
+    if ([defaultName isEqualToString:@"onboarding_completed"] ||
+        [defaultName rangeOfString:@"onboard" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        return @YES;
+    }
+    return %orig;
+}
+
+- (NSInteger)integerForKey:(NSString *)defaultName {
+    if ([defaultName isEqualToString:@"onboarding_completed"]) {
+        return 1;
+    }
+    return %orig;
+}
+
+%end
+
+// --- الخطافات لتزوير البيانات والهويات وتوجيه الشبكة ---
+%hook UIDevice
+- (NSUUID *)identifierForVendor {
+    return [[NSUUID alloc] initWithUUIDString:randomUUID()];
+}
+- (NSString *)systemVersion {
+    return randomOSVersion();
+}
+- (NSString *)model {
+    return @"iPhone";
+}
+- (NSString *)localizedModel {
+    return @"iPhone";
+}
+- (NSString *)uniqueIdentifier {
+    return randomIMEI();
+}
+%end
+
+%hook NSLocale
++ (NSLocale *)currentLocale {
+    return [[NSLocale alloc] initWithLocaleIdentifier:randomLocaleIdentifier()];
+}
+%end
+
+%hook ATTrackingManager
++ (NSUInteger)trackingAuthorizationStatus {
+    return 3;
+}
+%end
+
+%hook ASIdentifierManager
+- (NSUUID *)advertisingIdentifier {
+    return [[NSUUID alloc] initWithUUIDString:randomUUID()];
+}
+- (BOOL)isAdvertisingTrackingEnabled {
+    return YES;
+}
+%end
+
+%hook NSMutableURLRequest
+- (void)setURL:(NSURL *)url {
+    NSString *dynamicIP = randomSpectrumIP();
+    NSString *urlString = [url absoluteString];
+    
+    if ([urlString containsString:@"ip="]) {
+        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"ip=([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)" options:0 error:nil];
+        urlString = [regex stringByReplacingMatchesInString:urlString options:0 range:NSMakeRange(0, [urlString length]) withTemplate:[NSString stringWithFormat:@"ip=%@", dynamicIP]];
+    }
+    
+    url = [NSURL URLWithString:urlString] ?: url;
+    %orig(url);
+}
+
+- (void)setValue:(NSString * _Nullable)value forHTTPHeaderField:(NSString *)field {
+    NSString *dynIP = randomSpectrumIP();
+    NSString *dynDNS = randomSpectrumDNS();
+    NSString *dynIMEI = randomIMEI();
+    NSString *dynIDFA = randomUUID();
+    NSString *dynIDFV = randomUUID();
+    NSString *dynOS = randomOSVersion();
+    NSString *dynModel = randomDeviceModel();
+    
+    if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"] || [field isEqualToString:@"X-Client-IP"] || [field isEqualToString:@"Remote-IP"]) {
+        value = dynIP;
+    } else if ([field isEqualToString:@"X-Custom-DNS"] || [field isEqualToString:@"X-DNS-Server"]) {
+        value = dynDNS;
+    } else if ([field isEqualToString:@"X-Device-IMEI"] || [field isEqualToString:@"X-IMEI"] || [field isEqualToString:@"Device-Id"] || [field isEqualToString:@"IMEI"]) {
+        value = dynIMEI;
+    } else if ([field isEqualToString:@"X-Advertising-ID"] || [field isEqualToString:@"IDFA"] || [field isEqualToString:@"Advertising-Identifier"]) {
+        value = dynIDFA;
+    } else if ([field isEqualToString:@"X-Vendor-ID"] || [field isEqualToString:@"IDFV"]) {
+        value = dynIDFV;
+    } else if ([field isEqualToString:@"User-Agent"]) {
+        value = [NSString stringWithFormat:@"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1 AppModel/%@", dynOS, dynModel];
+    } else if ([field isEqualToString:@"X-OS-Version"] || [field isEqualToString:@"OS-Version"]) {
+        value = dynOS;
+    } else if ([field isEqualToString:@"X-Device-Model"]) {
+        value = dynModel;
+    } else if ([field isEqualToString:@"X-ISP"] || [field isEqualToString:@"X-Carrier"]) {
+        value = @"Charter Communications";
+    }
+
+    %orig(value, field);
+}
+%end
+
+%hook NSURLSession
+- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable))completionHandler {
+    NSMutableURLRequest *mutableReq = [request mutableCopy];
+    
+    NSString *dynIP = randomSpectrumIP();
+    NSString *dynDNS = randomSpectrumDNS();
+    NSString *dynIMEI = randomIMEI();
+    NSString *dynIDFA = randomUUID();
+    NSString *dynIDFV = randomUUID();
+    NSString *dynOS = randomOSVersion();
+    NSString *dynModel = randomDeviceModel();
+    NSString *timestamp = generateTimestamp();
+    
+    [mutableReq setValue:dynIP forHTTPHeaderField:@"X-Forwarded-For"];
+    [mutableReq setValue:dynIP forHTTPHeaderField:@"Client-IP"];
+    [mutableReq setValue:dynDNS forHTTPHeaderField:@"X-DNS-Server"];
+    [mutableReq setValue:dynIMEI forHTTPHeaderField:@"X-Device-IMEI"];
+    [mutableReq setValue:dynIDFA forHTTPHeaderField:@"X-Advertising-ID"];
+    [mutableReq setValue:dynIDFV forHTTPHeaderField:@"X-Vendor-ID"];
+    [mutableReq setValue:timestamp forHTTPHeaderField:@"X-Request-Timestamp"];
+    [mutableReq setValue:@"Charter Communications" forHTTPHeaderField:@"X-ISP"];
+    [mutableReq setValue:dynOS forHTTPHeaderField:@"X-OS-Version"];
+    [mutableReq setValue:dynModel forHTTPHeaderField:@"X-Device-Model"];
+    [mutableReq setValue:[NSString stringWithFormat:@"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", dynOS] forHTTPHeaderField:@"User-Agent"];
+    
+    void (^wrappedHandler)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable) = ^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
+        logGodModeEvent(@"NSURLSession", request.HTTPMethod, request.URL.absoluteString, httpResp.statusCode, data, error);
+        if (completionHandler) completionHandler(data, response, error);
+    };
+    
+    return %orig(mutableReq, wrappedHandler);
+}
+
+- (NSURLSessionDataTask *)dataTaskWithURL:(NSURL *)url completionHandler:(void (^)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable))completionHandler {
+    NSString *dynamicIP = randomSpectrumIP();
+    NSString *urlString = [url absoluteString];
+    
+    if ([urlString containsString:@"ip="]) {
+        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"ip=([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)" options:0 error:nil];
+        urlString = [regex stringByReplacingMatchesInString:urlString options:0 range:NSMakeRange(0, [urlString length]) withTemplate:[NSString stringWithFormat:@"ip=%@", dynamicIP]];
+        url = [NSURL URLWithString:urlString] ?: url;
+    }
+    
+    return %orig(url, completionHandler);
+}
+%end
+
+%hook NSURLSessionConfiguration
++ (NSURLSessionConfiguration *)defaultSessionConfiguration {
+    NSURLSessionConfiguration *config = %orig;
+    NSMutableArray *protocols = [config.protocolClasses mutableCopy];
+    if (!protocols) protocols = [NSMutableArray array];
+    if (![protocols containsObject:[GodModeNetworkProtocol class]]) {
+        [protocols insertObject:[GodModeNetworkProtocol class] atIndex:0];
+        config.protocolClasses = protocols;
+    }
+    return config;
+}
+%end
+
+// --- تهيئة التويك عند بدء التشغيل بدون أي مسح عشوائي للبيانات ---
+%ctor {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [NSURLProtocol registerClass:[GodModeNetworkProtocol class]];
+        checkAndEnforceValidAccount();
+    });
 }
