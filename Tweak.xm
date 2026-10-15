@@ -15,92 +15,6 @@ static NSString * const kAccount3_UUID   = @"7F4D0094-0107-44B6-9D4A-63FBCE2A595
 
 static BOOL isSwitchAlertShown = NO;
 
-// --- واجهة النافذة العائمة الشفافة (لا تعيق اللمس) ---
-@interface FLEXNetworkViewerWindow : NSObject
-+ (instancetype)sharedInstance;
-- (void)appendLog:(NSString * _Nullable)logText;
-@end
-
-@implementation FLEXNetworkViewerWindow {
-    UIWindow *_floatingWindow;
-    UITextView *_logTextView;
-}
-
-+ (instancetype)sharedInstance {
-    static FLEXNetworkViewerWindow *shared = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        shared = [[FLEXNetworkViewerWindow alloc] init];
-    });
-    return shared;
-}
-
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        [self setupUI];
-    }
-    return self;
-}
-
-- (void)setupUI {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (_floatingWindow) return;
-        
-        UIWindowScene *scene = nil;
-        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]]) {
-                scene = (UIWindowScene *)s;
-                break;
-            }
-        }
-        
-        if (scene) {
-            _floatingWindow = [[UIWindow alloc] initWithWindowScene:scene];
-        } else {
-            _floatingWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        }
-        
-        _floatingWindow.windowLevel = UIWindowLevelAlert + 9999;
-        _floatingWindow.backgroundColor = [UIColor clearColor];
-        _floatingWindow.userInteractionEnabled = NO; // تمرير اللمس للتطبيق خلفها
-        _floatingWindow.hidden = NO;
-        
-        UIViewController *vc = [[UIViewController alloc] init];
-        _floatingWindow.rootViewController = vc;
-        
-        _logTextView = [[UITextView alloc] initWithFrame:CGRectMake(15, 45, vc.view.bounds.size.width - 30, 180)];
-        _logTextView.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
-        _logTextView.textColor = [UIColor greenColor];
-        _logTextView.font = [UIFont fontWithName:@"Courier" size:10.0];
-        _logTextView.editable = NO;
-        _logTextView.userInteractionEnabled = NO;
-        _logTextView.layer.cornerRadius = 6;
-        _logTextView.layer.borderWidth = 1.0;
-        _logTextView.layer.borderColor = [[UIColor greenColor] CGColor];
-        
-        [vc.view addSubview:_logTextView];
-    });
-}
-
-- (void)appendLog:(NSString * _Nullable)logText {
-    if (!logText) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!_logTextView) [self setupUI];
-        NSString *current = _logTextView.text ?: @"";
-        NSString *updated = [NSString stringWithFormat:@"%@\n%@", current, logText];
-        if (updated.length > 6000) {
-            updated = [updated substringFromIndex:updated.length - 6000];
-        }
-        _logTextView.text = updated;
-        if (updated.length > 0) {
-            [_logTextView scrollRangeToVisible:NSMakeRange(_logTextView.text.length - 1, 1)];
-        }
-    });
-}
-
-@end
-
 // --- دوال الهويات العشوائية وبيئة التشغيل ---
 static NSString *randomUUID() { return [[NSUUID UUID] UUIDString]; }
 static NSString *randomIMEI() {
@@ -259,12 +173,10 @@ void checkAndEnforceValidAccount(void) {
     }
 }
 
-// --- معالجة الاستجابة ومراقبة النقاط عبر بروتوكول الشامل ---
-static void handleNetworkResponse(NSString *method, NSString *url, NSData *data) {
+// --- معالجة الاستجابة ومراقبة النقاط ---
+static void handleNetworkResponse(NSString *url, NSData *data) {
     checkAndEnforceValidAccount();
     if (!url) return;
-    
-    [[FLEXNetworkViewerWindow sharedInstance] appendLog:[NSString stringWithFormat:@"[%@] %@", method ?: @"GET", url]];
 
     if (![url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
         return;
@@ -277,7 +189,6 @@ static void handleNetworkResponse(NSString *method, NSString *url, NSData *data)
             NSNumber *pointsVal = pointsData[@"points"];
             if (pointsVal) {
                 NSInteger currentPoints = [pointsVal integerValue];
-                [[FLEXNetworkViewerWindow sharedInstance] appendLog:[NSString stringWithFormat:@"⭐ النقاط الحالية: %ld", (long)currentPoints]];
                 if (shouldProcessPoints(currentPoints) && currentPoints >= 395) {
                     performAccountSwitchAndAlert();
                 }
@@ -306,7 +217,7 @@ static void handleNetworkResponse(NSString *method, NSString *url, NSData *data)
     NSMutableURLRequest *newRequest = [self.request mutableCopy];
     [NSURLProtocol setProperty:@YES forKey:@"UniversalHandledKey" inRequest:newRequest];
     
-    // حقن الترويسات المزورة تلقائياً في الطلب
+    // حقن الترويسات المزورة تلقائياً
     [newRequest setValue:randomSpectrumIP() forHTTPHeaderField:@"X-Forwarded-For"];
     [newRequest setValue:randomSpectrumIP() forHTTPHeaderField:@"Client-IP"];
     [newRequest setValue:randomSpectrumDNS() forHTTPHeaderField:@"X-DNS-Server"];
@@ -319,7 +230,7 @@ static void handleNetworkResponse(NSString *method, NSString *url, NSData *data)
     NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
     NSURLSessionDataTask *task = [session dataTaskWithRequest:newRequest completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (data) {
-            handleNetworkResponse(newRequest.HTTPMethod, newRequest.URL.absoluteString, data);
+            handleNetworkResponse(newRequest.URL.absoluteString, data);
             [self.client URLProtocol:self didLoadData:data];
         }
         if (response) {
@@ -401,7 +312,6 @@ static void handleNetworkResponse(NSString *method, NSString *url, NSData *data)
 
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [FLEXNetworkViewerWindow sharedInstance];
         [NSURLProtocol registerClass:[UniversalNetworkProtocol class]];
         checkAndEnforceValidAccount();
     });
