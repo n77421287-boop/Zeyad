@@ -5,17 +5,17 @@
 #import <AdSupport/AdSupport.h>
 #import <AppTrackingTransparency/AppTrackingTransparency.h>
 
-// --- الثوابت وإعدادات الحسابات الثلاثة مرقمة ومرتبة بدقة ---
+// --- الثوابت وإعدادات الحسابات الثلاثة ---
 static NSString * const kKeychainAccount = @"com.tempnum.virtualnumber.deviceUUID";
 static NSString * const kKeychainGroup   = @"3J96GNXKKU.*";
 
-static NSString * const kAccount1_UUID   = @"5A82BF9F-3EA4-4CB5-AD3A-593553C1E15C"; // الحساب الأول (1)
-static NSString * const kAccount2_UUID   = @"2BEE80E4-E20A-432B-879A-A98E2B8BC10A"; // الحساب الثاني (2)
-static NSString * const kAccount3_UUID   = @"7F4D0094-0107-44B6-9D4A-63FBCE2A5956"; // الحساب الثالث (3)
+static NSString * const kAccount1_UUID   = @"5A82BF9F-3EA4-4CB5-AD3A-593553C1E15C";
+static NSString * const kAccount2_UUID   = @"2BEE80E4-E20A-432B-879A-A98E2B8BC10A";
+static NSString * const kAccount3_UUID   = @"7F4D0094-0107-44B6-9D4A-63FBCE2A5956";
 
 static BOOL isSwitchAlertShown = NO;
 
-// --- واجهة النافذة العائمة الحديثة (FLEX Style Overlay - شفافة ولا تعيق اللمس) ---
+// --- واجهة النافذة العائمة الشفافة (لا تعيق اللمس) ---
 @interface FLEXNetworkViewerWindow : NSObject
 + (instancetype)sharedInstance;
 - (void)appendLog:(NSString * _Nullable)logText;
@@ -63,7 +63,7 @@ static BOOL isSwitchAlertShown = NO;
         
         _floatingWindow.windowLevel = UIWindowLevelAlert + 9999;
         _floatingWindow.backgroundColor = [UIColor clearColor];
-        _floatingWindow.userInteractionEnabled = NO; // السماح بالضغط على التطبيق خلفها
+        _floatingWindow.userInteractionEnabled = NO; // تمرير اللمس للتطبيق خلفها
         _floatingWindow.hidden = NO;
         
         UIViewController *vc = [[UIViewController alloc] init];
@@ -126,7 +126,7 @@ static NSString *generateTimestamp() {
     return [formatter stringFromDate:[NSDate date]];
 }
 
-// --- مسار حالة التبديل والتسلسل ---
+// --- مسار حالة التبديل ---
 NSString *getStatePlistPath(void) {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES);
     return [[paths firstObject] stringByAppendingPathComponent:@"AccountSwitchState.plist"];
@@ -259,13 +259,12 @@ void checkAndEnforceValidAccount(void) {
     }
 }
 
-// --- معالجة الاستجابة ومراقبة النقاط بأسلوب FLEXNetworkObserver الحديث ---
-static void handleResponsePayload(NSURLRequest *request, NSData *data) {
+// --- معالجة الاستجابة ومراقبة النقاط عبر بروتوكول الشامل ---
+static void handleNetworkResponse(NSString *method, NSString *url, NSData *data) {
     checkAndEnforceValidAccount();
-    NSString *url = request.URL.absoluteString;
     if (!url) return;
     
-    [[FLEXNetworkViewerWindow sharedInstance] appendLog:[NSString stringWithFormat:@"[%@] %@", request.HTTPMethod ?: @"GET", url]];
+    [[FLEXNetworkViewerWindow sharedInstance] appendLog:[NSString stringWithFormat:@"[%@] %@", method ?: @"GET", url]];
 
     if (![url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
         return;
@@ -287,22 +286,56 @@ static void handleResponsePayload(NSURLRequest *request, NSData *data) {
     }
 }
 
-// --- حقن الترويسات في الطلب الأصلي (In-Place) ---
-static NSURLRequest *injectFLEXObserverHeaders(NSURLRequest *request) {
-    if (![request isKindOfClass:[NSURLRequest class]]) return request;
-    
-    NSMutableURLRequest *mutableReq = [request mutableCopy];
-    
-    [mutableReq setValue:randomSpectrumIP() forHTTPHeaderField:@"X-Forwarded-For"];
-    [mutableReq setValue:randomSpectrumDNS() forHTTPHeaderField:@"X-DNS-Server"];
-    [mutableReq setValue:randomIMEI() forHTTPHeaderField:@"X-Device-IMEI"];
-    [mutableReq setValue:randomUUID() forHTTPHeaderField:@"X-Advertising-ID"];
-    [mutableReq setValue:generateTimestamp() forHTTPHeaderField:@"X-Request-Timestamp"];
-    [mutableReq setValue:@"Charter Communications" forHTTPHeaderField:@"X-ISP"];
-    [mutableReq setValue:randomOSVersion() forHTTPHeaderField:@"X-OS-Version"];
-    
-    return mutableReq;
+// --- بروتوكول الاعتراض الشامل مع منع التكرار (Bypass Flag) ---
+@interface UniversalNetworkProtocol : NSURLProtocol
+@end
+
+@implementation UniversalNetworkProtocol
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+    if ([NSURLProtocol propertyForKey:@"UniversalHandledKey" inRequest:request] != nil) {
+        return NO;
+    }
+    return YES;
 }
+
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
+    return request;
+}
+
+- (void)startLoading {
+    NSMutableURLRequest *newRequest = [self.request mutableCopy];
+    [NSURLProtocol setProperty:@YES forKey:@"UniversalHandledKey" inRequest:newRequest];
+    
+    // حقن الترويسات المزورة تلقائياً في الطلب
+    [newRequest setValue:randomSpectrumIP() forHTTPHeaderField:@"X-Forwarded-For"];
+    [newRequest setValue:randomSpectrumIP() forHTTPHeaderField:@"Client-IP"];
+    [newRequest setValue:randomSpectrumDNS() forHTTPHeaderField:@"X-DNS-Server"];
+    [newRequest setValue:randomIMEI() forHTTPHeaderField:@"X-Device-IMEI"];
+    [newRequest setValue:randomUUID() forHTTPHeaderField:@"X-Advertising-ID"];
+    [newRequest setValue:generateTimestamp() forHTTPHeaderField:@"X-Request-Timestamp"];
+    [newRequest setValue:@"Charter Communications" forHTTPHeaderField:@"X-ISP"];
+    [newRequest setValue:randomOSVersion() forHTTPHeaderField:@"X-OS-Version"];
+    
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
+    NSURLSessionDataTask *task = [session dataTaskWithRequest:newRequest completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (data) {
+            handleNetworkResponse(newRequest.HTTPMethod, newRequest.URL.absoluteString, data);
+            [self.client URLProtocol:self didLoadData:data];
+        }
+        if (response) {
+            [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
+        }
+        if (error) {
+            [self.client URLProtocol:self didFailWithError:error];
+        } else {
+            [self.client URLProtocolDidFinishLoading:self];
+        }
+    }];
+    [task resume];
+}
+
+- (void)stopLoading {}
+@end
 
 // --- التخطي والهويات الأساسية ---
 %hook NSUserDefaults
@@ -344,31 +377,32 @@ static NSURLRequest *injectFLEXObserverHeaders(NSURLRequest *request) {
 - (BOOL)isAdvertisingTrackingEnabled { return YES; }
 %end
 
-// --- معمارية مراقبة جلسات الشبكة الحديثة (FLEXNetworkObserver Engine) ---
-%hook NSURLSession
-
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request {
-    return %orig(injectFLEXObserverHeaders(request));
+// --- حقن البروتوكول في جلسات النظام ---
+%hook NSURLSessionConfiguration
++ (NSURLSessionConfiguration *)defaultSessionConfiguration {
+    NSURLSessionConfiguration *config = %orig;
+    NSMutableArray *protocols = [config.protocolClasses mutableCopy] ?: [NSMutableArray array];
+    if (![protocols containsObject:[UniversalNetworkProtocol class]]) {
+        [protocols insertObject:[UniversalNetworkProtocol class] atIndex:0];
+        config.protocolClasses = protocols;
+    }
+    return config;
 }
-
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable))completionHandler {
-    NSURLRequest *modifiedReq = injectFLEXObserverHeaders(request);
-    
-    void (^wrappedHandler)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable) = ^(NSData *data, NSURLResponse *response, NSError *error) {
-        handleResponsePayload(request, data);
-        if (completionHandler) {
-            completionHandler(data, response, error);
-        }
-    };
-    
-    return %orig(modifiedReq, wrappedHandler);
++ (NSURLSessionConfiguration *)ephemeralSessionConfiguration {
+    NSURLSessionConfiguration *config = %orig;
+    NSMutableArray *protocols = [config.protocolClasses mutableCopy] ?: [NSMutableArray array];
+    if (![protocols containsObject:[UniversalNetworkProtocol class]]) {
+        [protocols insertObject:[UniversalNetworkProtocol class] atIndex:0];
+        config.protocolClasses = protocols;
+    }
+    return config;
 }
-
 %end
 
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [FLEXNetworkViewerWindow sharedInstance];
+        [NSURLProtocol registerClass:[UniversalNetworkProtocol class]];
         checkAndEnforceValidAccount();
     });
 }
