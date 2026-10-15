@@ -1,0 +1,41 @@
+name: Build iOS Tweak dylib
+
+on:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Install ldid
+      run: |
+        brew install ldid
+
+    - name: Setup Theos
+      run: |
+        rm -rf ~/theos
+        git clone --recursive https://github.com/theos/theos.git ~/theos
+        rm -rf ~/theos/sdks
+        git clone --depth=1 https://github.com/theos/sdks.git ~/theos/sdks
+
+    - name: Build Tweak
+      run: |
+        export THEOS=~/theos
+        make clean
+        make
+      env:
+        THEOS: /Users/runner/theos
+
+    - name: List built files
+      run: find .theos -name "*.dylib"
+
+    - name: Upload Dylib Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: AdPurgeTweak-dylib
+        path: .theos/obj/**/*.dylib
