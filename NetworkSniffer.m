@@ -269,9 +269,12 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
 // --- واجهة الزر العائم لإدارة الحسابات ---
 @interface AccountManagerButtonView : UIView
 @property (nonatomic, strong) UIButton *floatingButton;
+- (void)openManagerMenu;
+- (void)openEditUUIDsPrompt:(UIViewController *)parentVC;
 @end
 
 @implementation AccountManagerButtonView
+
 + (instancetype)sharedInstance {
     static AccountManagerButtonView *sharedInstance = nil;
     static dispatch_once_t onceToken;
@@ -372,7 +375,7 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
         textField.placeholder = @"UUID الحساب الثالث";
     }];
     
-    void (^saveHandler)(UIAlertAction *) = ^(UIAlertAction *action) {
+    [editAlert addAction:[UIAlertAction actionWithTitle:@"حفظ" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         UITextField *tf1 = editAlert.textFields[0];
         UITextField *tf2 = editAlert.textFields[1];
         UITextField *tf3 = editAlert.textFields[2];
@@ -384,13 +387,13 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
         UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم الحفظ" message:@"تم تحديث وتخزين الـ UUIDs في الملف بنجاح." preferredStyle:UIAlertControllerStyleAlert];
         [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
         [parentVC presentViewController:successAlert animated:YES completion:nil];
-    };
+    }]];
     
-    [editAlert addAction:[UIAlertAction actionWithTitle:@"حفظ" style:UIAlertActionStyleDefault handler:saveHandler]];
     [editAlert addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
     
     [parentVC presentViewController:editAlert animated:YES completion:nil];
 }
+
 @end
 
 // --- إظهار الزر العائم أعلى الشاشة ---
