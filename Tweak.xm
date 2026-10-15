@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// GhostIdentity v3.1 — Zero Static Values (Fixed Compilation)
+// GhostIdentity v3.2 — Zero Static Values (SDK-compatible)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #import <Foundation/Foundation.h>
@@ -17,7 +17,6 @@
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/if_var.h>
-#include <net/route.h>          // ← ضروري لـ RTM_IFINFO
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netdb.h>
@@ -30,6 +29,18 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+
+// ─── فحص وجود net/route.h (غير موجود في بعض SDKs) ──────────────────
+#if __has_include(<net/route.h>)
+    #include <net/route.h>
+    #define GHOST_HAS_ROUTE_H 1
+#else
+    #define GHOST_HAS_ROUTE_H 0
+    // تعريف يدوي بديل لثابت RTM_IFINFO (قيمته 0xe في Darwin)
+    #ifndef RTM_IFINFO
+        #define RTM_IFINFO 0xe
+    #endif
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SECTION 1 — GhostEngine
@@ -325,8 +336,8 @@
 }
 %end
 
-// ═════(f════════════════════════════════════════════d,══════════════════════════ addr
-// SECTION ,3 — C Function Hooks len
+// ═══════════════════════════════════════════════════════════════════════════
+// SECTION 3 — C Function Hooks
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─── helper: تحويل MAC string إلى 6 بايت ────────────────────────────
@@ -370,7 +381,7 @@ static int hook_getifaddrs(struct ifaddrs **ifap) {
     return ret;
 }
 
-// ─── sysctl ──────────────────────────────────────────────────────────
+// ─── sysctl (فقط إذا كان net/route.h متاحاً) ───────────────────────
 static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 
 static int hook_sysctl(int *name, u_int namelen,
@@ -378,6 +389,7 @@ static int hook_sysctl(int *name, u_int namelen,
                        void *newp, size_t newlen) {
     int ret = orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
 
+#if GHOST_HAS_ROUTE_H
     if (ret == 0 && oldp && namelen >= 6 &&
         name[0] == CTL_NET && name[1] == PF_ROUTE &&
         name[4] == NET_RT_IFLIST && name[5] == 0) {
@@ -399,6 +411,7 @@ static int hook_sysctl(int *name, u_int namelen,
             ifm = (struct if_msghdr *)((char *)ifm + ifm->ifm_msglen);
         }
     }
+#endif
     return ret;
 }
 
@@ -407,7 +420,7 @@ static int (*orig_connect)(int, const struct sockaddr *, socklen_t);
 
 static int hook_connect(int fd, const struct sockaddr *addr, socklen_t len) {
     if (!addr || addr->sa_family != AF_INET) {
-        return orig_connect);
+        return orig_connect(fd, addr, len);
     }
     return orig_connect(fd, addr, len);
 }
@@ -550,7 +563,7 @@ static CFReadStreamRef hook_CFReadStreamCreateForHTTPRequest(
 %ctor {
     @autoreleasepool {
         NSLog(@"[GhostIdentity] ─────────────────────────────");
-        NSLog(@"[GhostIdentity] v3.1 booting...");
+        NSLog(@"[GhostIdentity] v3.2 booting...");
 
         (void)[GhostEngine shared];
 
@@ -562,7 +575,7 @@ static CFReadStreamRef hook_CFReadStreamCreateForHTTPRequest(
         MSHookFunction((void *)sysctl,
                        (void *)hook_sysctl,
                        (void **)&orig_sysctl);
-        NSLog(@"[GhostIdentity] ✓ sysctl hooked");
+        NSLog(@"[GhostIdentity] ✓ sysctl hooked (route.h=%d)", GHOST_HAS_ROUTE_H);
 
         MSHookFunction((void *)connect,
                        (void *)hook_connect,
