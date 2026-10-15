@@ -323,7 +323,6 @@ void performAccountSwitchAndAlert(void) {
                 }
             }
         }
-        if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
         
         UIViewController *rootVC = keyWindow.rootViewController;
         while (rootVC.presentedViewController) {
@@ -369,7 +368,6 @@ void checkAndEnforceValidAccount(void) {
 void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSInteger statusCode, NSData *data, NSError *error) {
     checkAndEnforceValidAccount();
 
-    // طباعة جميع الطلبات ورابطها وحالتها في المربع العائم تماماً مثل واجهة FLEX للشبكة
     if (url) {
         NSString *logLine = [NSString stringWithFormat:@"[%@] %ld %@ -> %@", method, (long)statusCode, url, error ? @"[Error]" : @"[OK]"];
         [[FLEXNetworkViewerWindow sharedInstance] appendLog:logLine];
@@ -423,7 +421,6 @@ void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSIntege
     NSMutableURLRequest *mutableReq = [self.request mutableCopy];
     [NSURLProtocol setProperty:@YES forKey:@"GodModeHandled" inRequest:mutableReq];
     
-    // حقن الترويسات المزورة على الطريقة الأصلية
     NSString *dynIP = randomSpectrumIP();
     NSString *dynDNS = randomSpectrumDNS();
     NSString *dynIMEI = randomIMEI();
@@ -469,13 +466,12 @@ void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSIntege
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
     NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)task.response;
     NSData *taskData = nil; 
-    // تسجيل الحدث وإرساله للمربع العائم
     logGodModeEvent(@"FLEXProtocol", task.originalRequest.HTTPMethod, task.originalRequest.URL.absoluteString, httpResp.statusCode, taskData, error);
 
     if (error) {
         [self.client URLProtocol:self didFailWithError:error];
     } else {
-        [self.client URLProtocol:self didFinishLoading];
+        [self.client URLProtocolDidFinishLoading:self];
     }
 }
 
