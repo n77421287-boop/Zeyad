@@ -1,6 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// GhostIdentity v3 — Zero Static Values
-// Every value is generated dynamically at every request / every cycle
+// GhostIdentity v3.1 — Zero Static Values (Fixed Compilation)
 // ═══════════════════════════════════════════════════════════════════════════
 
 #import <Foundation/Foundation.h>
@@ -17,6 +16,8 @@
 #include <netinet/in.h>
 #include <net/if.h>
 #include <net/if_dl.h>
+#include <net/if_var.h>
+#include <net/route.h>          // ← ضروري لـ RTM_IFINFO
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netdb.h>
@@ -31,7 +32,7 @@
 #include <algorithm>
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 1 — GhostEngine (Zero-Static-Value Random Generator)
+// SECTION 1 — GhostEngine
 // ═══════════════════════════════════════════════════════════════════════════
 
 @interface GhostEngine : NSObject
@@ -62,7 +63,6 @@
     return inst;
 }
 
-// ─── بذرة عشوائية من 5 مصادر مستقلة ─────────────────────────────────
 - (uint64_t)gatherEntropy {
     uint64_t e1 = mach_absolute_time();
     uint64_t e2 = (uint64_t)[[NSDate date] timeIntervalSince1970];
@@ -78,7 +78,6 @@
 - (instancetype)init {
     if ((self = [super init])) {
         _rng.seed([self gatherEntropy]);
-        // استهلاك أولي لتحسين التوزيع
         for (int i = 0; i < 32; i++) (void)_rng();
     }
     return self;
@@ -96,7 +95,6 @@
     return min + (NSUInteger)([self nextU64] % (max - min + 1));
 }
 
-// ─── UUID: إصدار عشوائي بين 1 و 6 لتنويع البصمة ─────────────────────
 - (NSString *)newUUID {
     unsigned char b[16];
     uint64_t a = [self nextU64];
@@ -104,13 +102,11 @@
     memcpy(b, &a, 8);
     memcpy(b + 8, &c, 8);
 
-    // إصدار عشوائي من {1, 4, 6}
     static const unsigned char versions[] = {1, 4, 6};
     unsigned char ver = versions[(size_t)([self nextU64] % 3)];
     b[6] = (b[6] & 0x0F) | (ver << 4);
     b[8] = (b[8] & 0x3F) | 0x80;
 
-    // صيغة نصية عشوائية: أحرف كبيرة أو صغيرة
     BOOL upper = ([self nextU64] & 1) == 0;
     NSString *fmt = upper
         ? @"%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X"
@@ -124,13 +120,11 @@
 - (NSString *)newIDFA { return [self newUUID]; }
 - (NSString *)newIDFV { return [self newUUID]; }
 
-// ─── MAC: OUI عشوائي + 3 بايت عشوائية + صيغة عشوائية ────────────────
 - (NSString *)newMAC {
     unsigned char mac[6];
     for (int i = 0; i < 6; i++) mac[i] = (unsigned char)[self nextByte];
     mac[0] = (mac[0] & 0xFE) | 0x02;
 
-    // 4 صيغ محتملة للمفاصل
     NSUInteger style = [self nextInRange:0 max:3];
     if (style == 0)
         return [NSString stringWithFormat:@"%02X:%02X:%02X:%02X:%02X:%02X",
@@ -145,18 +139,13 @@
             mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]];
 }
 
-// ─── Serial: طول عشوائي + مجموعة أحرف عشوائية البناء ────────────────
 - (NSString *)newSerial {
-    // طول عشوائي 8..16
     NSUInteger len = [self nextInRange:8 max:16];
-
-    // نبني مجموعة أحرف ديناميكية (أحرف كبيرة + أرقام)
     static const char upperSet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     static const char digitSet[] = "0123456789";
 
     NSMutableString *s = [NSMutableString stringWithCapacity:len];
     for (NSUInteger i = 0; i < len; i++) {
-        // 60% حرف، 40% رقم (نسبة عشوائية أيضاً)
         BOOL useLetter = ([self nextU64] % 100) < 60;
         if (useLetter) {
             NSUInteger idx = [self nextInRange:0 max:25];
@@ -169,7 +158,6 @@
     return s;
 }
 
-// ─── IPv4: عشوائي بالكامل مع استبعاد المحجوز ────────────────────────
 - (NSString *)newRandomIP {
     int a, b, c, d;
     do {
@@ -183,7 +171,6 @@
     return [NSString stringWithFormat:@"%d.%d.%d.%d", a, b, c, d];
 }
 
-// ─── IPv6: مطلوب في بعض الترويسات ───────────────────────────────────
 - (NSString *)newRandomIPv6 {
     NSMutableString *s = [NSMutableString stringWithCapacity:40];
     for (int g = 0; g < 8; g++) {
@@ -194,28 +181,22 @@
     return s;
 }
 
-// ─── User-Agent: بناء كامل ديناميكي ─────────────────────────────────
 - (NSString *)newUserAgent {
-    // إصدار iOS عشوائي 14..18 مع إصدار فرعي عشوائي
     NSUInteger major = [self nextInRange:14 max:18];
     NSUInteger minor = [self nextInRange:0 max:7];
     NSUInteger patch = [self nextInRange:0 max:3];
 
-    // إصدار WebKit عشري عشوائي: 605.X.Y
     NSUInteger wkMajor = 605;
     NSUInteger wkMinor = [self nextInRange:1 max:9];
     NSUInteger wkPatch = [self nextInRange:0 max:99];
 
-    // رقم build عشوائي: 15X### 
     NSUInteger buildLetter = [self nextInRange:0 max:25];
     NSUInteger buildNum = [self nextInRange:100 max:999];
 
-    // نوع الجهاز: iPhone أو iPad
     BOOL isPad = ([self nextU64] & 1);
     NSString *deviceStr = isPad ? @"iPad" : @"iPhone";
     NSString *cpuStr = isPad ? @"CPU OS" : @"CPU iPhone OS";
 
-    // إصدار Safari: 16..18
     NSUInteger safariMajor = [self nextInRange:16 max:18];
     NSUInteger safariMinor = [self nextInRange:0 max:9];
     NSUInteger safariPatch = [self nextInRange:0 max:99];
@@ -234,17 +215,11 @@
         (char)('a' + ([self nextU64] % 26))];
 }
 
-// ─── System Version: كل الأرقام عشوائية ─────────────────────────────
 - (NSString *)newSystemVersion {
     NSUInteger major = [self nextInRange:14 max:18];
     NSUInteger minor = [self nextInRange:0 max:7];
     NSUInteger patch = [self nextInRange:0 max:3];
-    if (major >= 17) {
-        // iOS 17+ عادةً بدون patch في الفئة
-        return [NSString stringWithFormat:@"%lu.%lu",
-                (unsigned long)major, (unsigned long)minor];
-    }
-    if (patch == 0) {
+    if (major >= 17 || patch == 0) {
         return [NSString stringWithFormat:@"%lu.%lu",
                 (unsigned long)major, (unsigned long)minor];
     }
@@ -252,13 +227,10 @@
             (unsigned long)major, (unsigned long)minor, (unsigned long)patch];
 }
 
-// ─── Device Name: اسم عشوائي بالكامل ────────────────────────────────
 - (NSString *)newDeviceName {
-    // بادئة ديناميكية
     NSArray *prefixes = @[@"iPhone", @"iPad", @"iPod"];
     NSString *prefix = prefixes[[self nextInRange:0 max:prefixes.count - 1]];
 
-    // لاحقة عشوائية طويلة
     NSUInteger suffixLen = [self nextInRange:6 max:14];
     static const char set[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     NSMutableString *suffix = [NSMutableString stringWithCapacity:suffixLen];
@@ -267,16 +239,13 @@
         [suffix appendFormat:@"%c", set[idx]];
     }
 
-    // صيغة الاسم: بعض الأحيان مع مسافة، بعض الأحيان بدون، أحياناً مع شرطة
     NSUInteger style = [self nextInRange:0 max:2];
     if (style == 0) return [NSString stringWithFormat:@"%@-%@", prefix, suffix];
     if (style == 1) return [NSString stringWithFormat:@"%@ %@", prefix, suffix];
     return [NSString stringWithFormat:@"%@%@", prefix, suffix];
 }
 
-// ─── الترويسات: عدد ديناميكي، ترتيب عشوائي، أسماء بديلة ديناميكية ──
 - (NSDictionary *)newHeaders {
-    // مخزن الأسماء المحتملة للترويسات (بكل الصيغ المعروفة)
     NSArray *ipKeys = @[
         @"X-Forwarded-For", @"X-Real-IP", @"X-Client-IP",
         @"X-Originating-IP", @"X-Remote-IP", @"X-Remote-Addr",
@@ -286,14 +255,12 @@
         @"X-Originating-Address", @"X-Client-Address"
     ];
 
-    // خلط عشوائي كامل
     NSMutableArray *shuffled = [ipKeys mutableCopy];
     for (NSUInteger i = shuffled.count; i > 1; i--) {
         NSUInteger j = [self nextInRange:0 max:i - 1];
         [shuffled exchangeObjectAtIndex:i - 1 withObjectAtIndex:j];
     }
 
-    // اختيار عدد عشوائي من الترويسات (5..12)
     NSUInteger count = [self nextInRange:5 max:12];
     if (count > shuffled.count) count = shuffled.count;
 
@@ -301,13 +268,10 @@
     for (NSUInteger i = 0; i < count; i++) {
         NSString *key = shuffled[i];
 
-        // لكل ترويسة: إما IPv4 أو IPv6 (احتمال 20% لـ IPv6)
         BOOL useV6 = ([self nextU64] % 5) == 0;
         NSString *value = useV6 ? [self newRandomIPv6] : [self newRandomIP];
 
-        // بعض الترويسات تحتاج صيغة خاصة
         if ([key isEqualToString:@"Forwarded"] || [key isEqualToString:@"Forwarded-For"]) {
-            // الصيغة القياسية RFC 7239
             value = [NSString stringWithFormat:@"for=%@;proto=https;by=%@",
                      value, [self newRandomIP]];
         }
@@ -315,16 +279,12 @@
         headers[key] = value;
     }
 
-    // إضافة User-Agent ديناميكي (بصيغة عشوائية)
     headers[@"User-Agent"] = [self newUserAgent];
-
     return headers;
 }
 
-// ─── فاصل التدوير: عشوائي 5..45 ثانية ──────────────────────────────
 - (NSTimeInterval)newRotationInterval {
     NSUInteger seconds = [self nextInRange:5 max:45];
-    // إضافة أجزاء كسرية عشوائية
     double frac = ([self nextU64] % 1000) / 1000.0;
     return (NSTimeInterval)seconds + frac;
 }
@@ -332,7 +292,7 @@
 @end
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 2 — Device Identifier Hooks (Dynamic)
+// SECTION 2 — Device Identifier Hooks
 // ═══════════════════════════════════════════════════════════════════════════
 
 %hook ASIdentifierManager
@@ -365,9 +325,23 @@
 }
 %end
 
+// ═════(f════════════════════════════════════════════d,══════════════════════════ addr
+// SECTION ,3 — C Function Hooks len
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 3 — C Function Hooks
-// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── helper: تحويل MAC string إلى 6 بايت ────────────────────────────
+static void GhostApplyMACToBuffer(NSString *mac, unsigned char *out) {
+    NSString *clean = [mac stringByReplacingOccurrencesOfString:@":" withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@"-" withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@"." withString:@""];
+    if (clean.length < 12) return;
+    for (int i = 0; i < 6; i++) {
+        NSString *pair = [clean substringWithRange:NSMakeRange(i * 2, 2)];
+        unsigned int v = 0;
+        sscanf([pair UTF8String], "%x", &v);
+        out[i] = (unsigned char)v;
+    }
+}
 
 // ─── getifaddrs ──────────────────────────────────────────────────────
 static int (*orig_getifaddrs)(struct ifaddrs **);
@@ -386,19 +360,10 @@ static int hook_getifaddrs(struct ifaddrs **ifap) {
 
             struct sockaddr_dl *sdl = (struct sockaddr_dl *)ifa->ifa_addr;
             NSString *mac = [[GhostEngine shared] newMAC];
-            // استخراج البايتات من أي صيغة (نستخدم أول 6 بايت من الهيكس)
-            NSString *clean = [[mac stringByReplacingOccurrencesOfString:@":" withString:@""]
-                                  stringByReplacingOccurrencesOfString:@"-" withString:@""];
-            clean = [clean stringByReplacingOccurrencesOfString:@"." withString:@""];
-            if (clean.length >= 12) {
-                for (int i = 0; i < 6; i++) {
-                    NSString *pair = [clean substringWithRange:NSMakeRange(i*2, 2)];
-                    unsigned int v = 0;
-                    sscanf([pair UTF8String], "%x", &v);
-                    LLADDR(sdl)[i] = (unsigned char)v;
-                }
-                sdl->sdl_alen = 6;
-            }
+            unsigned char bytes[6];
+            GhostApplyMACToBuffer(mac, bytes);
+            for (int i = 0; i < 6; i++) LLADDR(sdl)[i] = bytes[i];
+            sdl->sdl_alen = 6;
         }
         ifa = ifa->ifa_next;
     }
@@ -425,18 +390,10 @@ static int hook_sysctl(int *name, u_int namelen,
                 struct sockaddr_dl *sdl = (struct sockaddr_dl *)(ifm + 1);
                 if (sdl->sdl_family == AF_LINK && sdl->sdl_alen == 6) {
                     NSString *mac = [[GhostEngine shared] newMAC];
-                    NSString *clean = [[mac stringByReplacingOccurrencesOfString:@":" withString:@""]
-                                          stringByReplacingOccurrencesOfString:@"-" withString:@""];
-                    clean = [clean stringByReplacingOccurrencesOfString:@"." withString:@""];
-                    if (clean.length >= 12) {
-                        char *addr = LLADDR(sdl);
-                        for (int i = 0; i < 6; i++) {
-                            NSString *pair = [clean substringWithRange:NSMakeRange(i*2, 2)];
-                            unsigned int v = 0;
-                            sscanf([pair UTF8String], "%x", &v);
-                            addr[i] = (unsigned char)v;
-                        }
-                    }
+                    unsigned char bytes[6];
+                    GhostApplyMACToBuffer(mac, bytes);
+                    char *addr = LLADDR(sdl);
+                    for (int i = 0; i < 6; i++) addr[i] = bytes[i];
                 }
             }
             ifm = (struct if_msghdr *)((char *)ifm + ifm->ifm_msglen);
@@ -449,24 +406,24 @@ static int hook_sysctl(int *name, u_int namelen,
 static int (*orig_connect)(int, const struct sockaddr *, socklen_t);
 
 static int hook_connect(int fd, const struct sockaddr *addr, socklen_t len) {
-    if (!addr || addr->sa_family != AF,_INET) const {
-        return orig_connect(fd, addr, len char);
+    if (!addr || addr->sa_family != AF_INET) {
+        return orig_connect);
     }
-    return orig_connect(fd *, addr, len);
-service}
+    return orig_connect(fd, addr, len);
+}
 
 // ─── getaddrinfo ─────────────────────────────────────────────────────
 static int (*orig_getaddrinfo)(const char *, const char *,
                                const struct addrinfo *, struct addrinfo **);
 
-static int hook_getaddrinfo(const char *node,
+static int hook_getaddrinfo(const char *node, const char *service,
                             const struct addrinfo *hints,
                             struct addrinfo **res) {
     return orig_getaddrinfo(node, service, hints, res);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 4 — HTTP Header Injection (Dynamic Order & Count)
+// SECTION 4 — HTTP Header Injection
 // ═══════════════════════════════════════════════════════════════════════════
 
 static void GhostInjectHeaders(NSMutableURLRequest *req) {
@@ -474,7 +431,6 @@ static void GhostInjectHeaders(NSMutableURLRequest *req) {
 
     NSDictionary *h = [[GhostEngine shared] newHeaders];
 
-    // خلط ترتيب المفاتيح (لدعم انطباع أن كل طلب مختلف حتى في الترتيب)
     NSArray *keys = [h allKeys];
     NSMutableArray *shuffled = [keys mutableCopy];
     for (NSUInteger i = shuffled.count; i > 1; i--) {
@@ -483,7 +439,6 @@ static void GhostInjectHeaders(NSMutableURLRequest *req) {
     }
 
     for (NSString *k in shuffled) {
-        // لا نستبدل User-Agent إذا عيّنه التطبيق بنفسه
         if ([k isEqualToString:@"User-Agent"] &&
             [req valueForHTTPHeaderField:@"User-Agent"] != nil) {
             continue;
@@ -503,12 +458,6 @@ static void GhostInjectHeaders(NSMutableURLRequest *req) {
     NSMutableURLRequest *m = [request mutableCopy];
     GhostInjectHeaders(m);
     return %orig(m);
-}
-- (NSURLSessionDataTask *)dataTaskWithURL:(NSURL *)url
-                        completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
-    NSMutableURLRequest *m = [NSMutableURLRequest requestWithURL:url];
-    GhostInjectHeaders(m);
-    return %orig(m, completionHandler);
 }
 %end
 
@@ -555,13 +504,12 @@ static CFReadStreamRef hook_CFReadStreamCreateForHTTPRequest(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SECTION 5 — Periodic Rotation Timer
+// SECTION 5 — Rotation Scheduler
 // ═══════════════════════════════════════════════════════════════════════════
 
 @interface GhostRotationScheduler : NSObject
 @property (nonatomic, strong) NSTimer *timer;
 - (void)start;
-- (void)scheduleNext;
 @end
 
 @implementation GhostRotationScheduler
@@ -582,7 +530,6 @@ static CFReadStreamRef hook_CFReadStreamCreateForHTTPRequest(
 - (void)scheduleNext {
     NSTimeInterval interval = [[GhostEngine shared] newRotationInterval];
     NSLog(@"[GhostIdentity] next rotation in %.3f seconds", interval);
-
     self.timer = [NSTimer scheduledTimerWithTimeInterval:interval
                                                   target:self
                                                 selector:@selector(fire:)
@@ -591,8 +538,6 @@ static CFReadStreamRef hook_CFReadStreamCreateForHTTPRequest(
 }
 
 - (void)fire:(NSTimer *)t {
-    // لا نحتاج فعل شيء — كل القيم تُولَّد عند الطلب.
-    // هذا المؤقّت يجعل الفاصل الزمني عشوائياً باستمرار.
     [self scheduleNext];
 }
 
@@ -605,7 +550,7 @@ static CFReadStreamRef hook_CFReadStreamCreateForHTTPRequest(
 %ctor {
     @autoreleasepool {
         NSLog(@"[GhostIdentity] ─────────────────────────────");
-        NSLog(@"[GhostIdentity] v3 booting (zero static values)...");
+        NSLog(@"[GhostIdentity] v3.1 booting...");
 
         (void)[GhostEngine shared];
 
@@ -641,10 +586,9 @@ static CFReadStreamRef hook_CFReadStreamCreateForHTTPRequest(
             }
         }
 
-        // بدء المؤقّت العشوائي
         [[GhostRotationScheduler shared] start];
 
-        NSLog(@"[GhostIdentity] Engine ready (all values dynamic) ✅");
+        NSLog(@"[GhostIdentity] Engine ready ✅");
         NSLog(@"[GhostIdentity] ─────────────────────────────");
     }
 }
