@@ -299,7 +299,7 @@ void performSequentialAutoSwitch(void) {
     }
     
     dict[@"AutoSequenceStep"] = @(nextStep);
-    dict[@"TimerRemaining"] = @(300); // إعادة تعيين العداد لـ 5 دقائق جديدة
+    dict[@"TimerRemaining"] = @(300);
     [dict writeToFile:path atomically:YES];
     saveStateBackupToKeychain(dict);
     
@@ -314,6 +314,9 @@ void performSequentialAutoSwitch(void) {
 @property (nonatomic, assign) NSInteger remainingSeconds;
 - (void)openManagerMenu;
 - (void)openEditUUIDsPrompt:(UIViewController *)parentVC;
+- (void)updateTimerDisplay;
+- (void)startCountdownEngine;
+- (void)tickerStep;
 @end
 
 @implementation AccountManagerButtonView
@@ -322,7 +325,6 @@ void performSequentialAutoSwitch(void) {
     static AccountManagerButtonView *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // تم تغيير الإحداثيات لتكون أعلى الشاشة على اليمين (عرض 120، ارتفاع 50)
         CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
         sharedInstance = [[AccountManagerButtonView alloc] initWithFrame:CGRectMake(screenWidth - 135, 45, 120, 50)];
     });
@@ -338,7 +340,6 @@ void performSequentialAutoSwitch(void) {
         self.layer.borderColor = [UIColor greenColor].CGColor;
         self.clipsToBounds = YES;
         
-        // زر الإعدادات / القائمة (يمين المربع الصغير)
         self.floatingButton = [UIButton buttonWithType:UIButtonTypeSystem];
         self.floatingButton.frame = CGRectMake(80, 5, 35, 40);
         [self.floatingButton setTitle:@"⚙️" forState:UIControlStateNormal];
@@ -346,7 +347,6 @@ void performSequentialAutoSwitch(void) {
         [self.floatingButton addTarget:self action:@selector(openManagerMenu) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.floatingButton];
         
-        // ليبل العد التنازلي واسم الحساب ورقمة (يسار المربع الصغير)
         self.timerLabel = [[UILabel alloc] initWithFrame:CGRectMake(5, 3, 75, 44)];
         self.timerLabel.textColor = [UIColor greenColor];
         self.timerLabel.font = [UIFont boldSystemFontOfSize:9.5];
@@ -354,7 +354,6 @@ void performSequentialAutoSwitch(void) {
         self.timerLabel.numberOfLines = 3;
         [self addSubview:self.timerLabel];
         
-        // جلب الثواني المتبقية من الملف أو البدء بـ 300 ثانية (5 دقائق)
         NSString *path = getStatePlistPath();
         NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
         if (dict && dict[@"TimerRemaining"]) {
@@ -400,15 +399,12 @@ void performSequentialAutoSwitch(void) {
     NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
     NSInteger step = dict[@"AutoSequenceStep"] ? [dict[@"AutoSequenceStep"] integerValue] : 1;
     
-    // تحديد اسم الحساب المعروض بناءً على رقمه والـ UUID الخاص به
     NSString *accountKey = [NSString stringWithFormat:@"Account%ld_UUID", (long)step];
     NSString *fallbackUUID = (step == 1) ? kDefaultAcc1_UUID : (step == 2) ? kDefaultAcc2_UUID : (step == 3) ? kDefaultAcc3_UUID : kDefaultAcc4_UUID;
     NSString *uuid = getCustomAccountUUID(accountKey, fallbackUUID);
     
-    // استخراج أول مقطع من الـ UUID ليكون اسماً مختصراً واضحاً (مثلاً: 1A2B3C4D)
     NSString *shortName = (uuid.length >= 8) ? [uuid substringToIndex:8] : @"Account";
     
-    // عرض رقم الحساب، اسمه المختصر، والوقت المتبقي
     self.timerLabel.text = [NSString stringWithFormat:@"حساب %ld (%@)\n⏱ %02ld:%02ld", (long)step, shortName, (long)mins, (long)secs];
 }
 
