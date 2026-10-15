@@ -18,6 +18,89 @@ static NSString * const kAccount3_UUID   = @"7F4D0094-0107-44B6-9D4A-63FBCE2A595
 
 static BOOL isSwitchAlertShown = NO;
 
+// --- واجهة النافذة العائمة الخاصة بعرض سجلات الشبكة (على طريقة FLEX) ---
+@interface FLEXNetworkViewerWindow : NSObject
++ (instancetype)sharedInstance;
+- (void)appendLog:(NSString *)logText;
+@end
+
+@implementation FLEXNetworkViewerWindow {
+    UIWindow *_floatingWindow;
+    UITextView *_logTextView;
+}
+
++ (instancetype)sharedInstance {
+    static FLEXNetworkViewerWindow *shared = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        shared = [[FLEXNetworkViewerWindow alloc] init];
+    });
+    return shared;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        [self setupUI];
+    }
+    return self;
+}
+
+- (void)setupUI {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (_floatingWindow) return;
+        
+        UIWindowScene *scene = nil;
+        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+            if ([s isKindOfClass:[UIWindowScene class]]) {
+                scene = (UIWindowScene *)s;
+                break;
+            }
+        }
+        
+        if (scene) {
+            _floatingWindow = [[UIWindow alloc] initWithWindowScene:scene];
+        } else {
+            _floatingWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        }
+        
+        _floatingWindow.windowLevel = UIWindowLevelAlert + 9999;
+        _floatingWindow.backgroundColor = [UIColor clearColor];
+        _floatingWindow.hidden = NO;
+        
+        UIViewController *vc = [[UIViewController alloc] init];
+        _floatingWindow.rootViewController = vc;
+        
+        _logTextView = [[UITextView alloc] initWithFrame:CGRectMake(15, 45, vc.view.bounds.size.width - 30, 180)];
+        _logTextView.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        _logTextView.textColor = [UIColor greenColor];
+        _logTextView.font = [UIFont fontWithName:@"Courier" size:10.0];
+        _logTextView.editable = NO;
+        _logTextView.layer.cornerRadius = 6;
+        _logTextView.layer.borderWidth = 1.0;
+        _logTextView.layer.borderColor = [[UIColor greenColor] CGColor];
+        
+        [vc.view addSubview:_logTextView];
+    });
+}
+
+- (void)appendLog:(NSString *)logText {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!_logTextView) [self setupUI];
+        NSString *current = _logTextView.text ?: @"";
+        NSString *updated = [NSString stringWithFormat:@"%@\n%@", current, logText];
+        if (updated.length > 6000) {
+            updated = [updated substringFromIndex:updated.length - 6000];
+        }
+        _logTextView.text = updated;
+        if (updated.length > 0) {
+            [_logTextView scrollRangeToVisible:NSMakeRange(_logTextView.text.length - 1, 1)];
+        }
+    });
+}
+
+@end
+
 // --- دوال مساعدة لإنشاء هويات عشوائية وتزوير البيئة ---
 static NSString *randomUUID() {
     return [[NSUUID UUID] UUIDString];
@@ -247,7 +330,6 @@ void performAccountSwitchAndAlert(void) {
             rootVC = rootVC.presentedViewController;
         }
         
-        // تم تصحيح اسم الدالة هنا بضافة with في المنتصف
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🔄 تم التبديل التسلسلي بنجاح"
                                                                    message:@"تم الوصول إلى 395 نقطة، والانتقال للحساب التالي بالترتيب الدقيق.\n\nسيتم إغلاق التطبيق الآن..."
                                                             preferredStyle:UIAlertControllerStyleAlert];
@@ -283,8 +365,15 @@ void checkAndEnforceValidAccount(void) {
     }
 }
 
+// --- معالجة البيانات وإرسالها للشاشة العائمة وعلى طريقة FLEX ---
 void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSInteger statusCode, NSData *data, NSError *error) {
     checkAndEnforceValidAccount();
+
+    // طباعة جميع الطلبات ورابطها وحالتها في المربع العائم تماماً مثل واجهة FLEX للشبكة
+    if (url) {
+        NSString *logLine = [NSString stringWithFormat:@"[%@] %ld %@ -> %@", method, (long)statusCode, url, error ? @"[Error]" : @"[OK]"];
+        [[FLEXNetworkViewerWindow sharedInstance] appendLog:logLine];
+    }
 
     if (!url || ![url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
         return;
@@ -309,42 +398,87 @@ void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSIntege
     }
 }
 
-// --- بروتوكول شبكة اعتراض النقاط ---
-@interface GodModeNetworkProtocol : NSURLProtocol
+// --- بروتوكول شبكة اعتراض الطلبات (على طريقة FLEX الأصلية عبر NSURLProtocol) ---
+@interface GodModeNetworkProtocol : NSURLProtocol <NSURLSessionDataDelegate>
+@property (nonatomic, strong) NSURLSessionDataTask *task;
 @end
 
 @implementation GodModeNetworkProtocol
+
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
-    NSString *url = request.URL.absoluteString;
-    if (url && [url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
+    NSString *scheme = request.URL.scheme;
+    if ([scheme caseInsensitiveCompare:@"http"] == NSOrderedSame || [scheme caseInsensitiveCompare:@"https"] == NSOrderedSame) {
         if ([NSURLProtocol propertyForKey:@"GodModeHandled" inRequest:request] == nil) {
             return YES;
         }
     }
     return NO;
 }
+
 + (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
-    NSMutableURLRequest *mutableReq = [request mutableCopy];
-    [NSURLProtocol setProperty:@YES forKey:@"GodModeHandled" inRequest:mutableReq];
-    return mutableReq;
+    return request;
 }
+
 - (void)startLoading {
-    NSMutableURLRequest *newReq = [self.request mutableCopy];
-    [NSURLProtocol setProperty:@YES forKey:@"GodModeHandled" inRequest:newReq];
+    NSMutableURLRequest *mutableReq = [self.request mutableCopy];
+    [NSURLProtocol setProperty:@YES forKey:@"GodModeHandled" inRequest:mutableReq];
     
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
-    NSURLSessionDataTask *task = [session dataTaskWithRequest:newReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-        logGodModeEvent(@"Protocol", newReq.HTTPMethod, newReq.URL.absoluteString, httpResp.statusCode, data, error);
-        
-        if (data) [self.client URLProtocol:self didLoadData:data];
-        if (response) [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
-        if (error) [self.client URLProtocol:self didFailWithError:error];
-        else [self.client URLProtocolDidFinishLoading:self];
-    }];
-    [task resume];
+    // حقن الترويسات المزورة على الطريقة الأصلية
+    NSString *dynIP = randomSpectrumIP();
+    NSString *dynDNS = randomSpectrumDNS();
+    NSString *dynIMEI = randomIMEI();
+    NSString *dynIDFA = randomUUID();
+    NSString *dynIDFV = randomUUID();
+    NSString *dynOS = randomOSVersion();
+    NSString *dynModel = randomDeviceModel();
+    NSString *timestamp = generateTimestamp();
+    
+    [mutableReq setValue:dynIP forHTTPHeaderField:@"X-Forwarded-For"];
+    [mutableReq setValue:dynIP forHTTPHeaderField:@"Client-IP"];
+    [mutableReq setValue:dynDNS forHTTPHeaderField:@"X-DNS-Server"];
+    [mutableReq setValue:dynIMEI forHTTPHeaderField:@"X-Device-IMEI"];
+    [mutableReq setValue:dynIDFA forHTTPHeaderField:@"X-Advertising-ID"];
+    [mutableReq setValue:dynIDFV forHTTPHeaderField:@"X-Vendor-ID"];
+    [mutableReq setValue:timestamp forHTTPHeaderField:@"X-Request-Timestamp"];
+    [mutableReq setValue:@"Charter Communications" forHTTPHeaderField:@"X-ISP"];
+    [mutableReq setValue:dynOS forHTTPHeaderField:@"X-OS-Version"];
+    [mutableReq setValue:dynModel forHTTPHeaderField:@"X-Device-Model"];
+    [mutableReq setValue:[NSString stringWithFormat:@"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", dynOS] forHTTPHeaderField:@"User-Agent"];
+
+    NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];
+    
+    self.task = [session dataTaskWithRequest:mutableReq];
+    [self.task resume];
 }
-- (void)stopLoading {}
+
+- (void)stopLoading {
+    [self.task cancel];
+    self.task = nil;
+}
+
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
+    [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
+    completionHandler(NSURLSessionResponseAllow);
+}
+
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
+    [self.client URLProtocol:self didLoadData:data];
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+    NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)task.response;
+    NSData *taskData = nil; 
+    // تسجيل الحدث وإرساله للمربع العائم
+    logGodModeEvent(@"FLEXProtocol", task.originalRequest.HTTPMethod, task.originalRequest.URL.absoluteString, httpResp.statusCode, taskData, error);
+
+    if (error) {
+        [self.client URLProtocol:self didFailWithError:error];
+    } else {
+        [self.client URLProtocol:self didFinishLoading];
+    }
+}
+
 @end
 
 // --- تخطي شاشات الترحيب والشروط تلقائياً عبر NSUserDefaults ---
@@ -377,7 +511,7 @@ void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSIntege
 
 %end
 
-// --- الخطافات لتزوير البيانات والهويات وتوجيه الشبكة ---
+// --- الخطافات لتزوير الهويات والبيانات الأساسية ---
 %hook UIDevice
 - (NSUUID *)identifierForVendor {
     return [[NSUUID alloc] initWithUUIDString:randomUUID()];
@@ -417,101 +551,7 @@ void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSIntege
 }
 %end
 
-%hook NSMutableURLRequest
-- (void)setURL:(NSURL *)url {
-    NSString *dynamicIP = randomSpectrumIP();
-    NSString *urlString = [url absoluteString];
-    
-    if ([urlString containsString:@"ip="]) {
-        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"ip=([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)" options:0 error:nil];
-        urlString = [regex stringByReplacingMatchesInString:urlString options:0 range:NSMakeRange(0, [urlString length]) withTemplate:[NSString stringWithFormat:@"ip=%@", dynamicIP]];
-    }
-    
-    url = [NSURL URLWithString:urlString] ?: url;
-    %orig(url);
-}
-
-- (void)setValue:(NSString * _Nullable)value forHTTPHeaderField:(NSString *)field {
-    NSString *dynIP = randomSpectrumIP();
-    NSString *dynDNS = randomSpectrumDNS();
-    NSString *dynIMEI = randomIMEI();
-    NSString *dynIDFA = randomUUID();
-    NSString *dynIDFV = randomUUID();
-    NSString *dynOS = randomOSVersion();
-    NSString *dynModel = randomDeviceModel();
-    
-    if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"] || [field isEqualToString:@"X-Client-IP"] || [field isEqualToString:@"Remote-IP"]) {
-        value = dynIP;
-    } else if ([field isEqualToString:@"X-Custom-DNS"] || [field isEqualToString:@"X-DNS-Server"]) {
-        value = dynDNS;
-    } else if ([field isEqualToString:@"X-Device-IMEI"] || [field isEqualToString:@"X-IMEI"] || [field isEqualToString:@"Device-Id"] || [field isEqualToString:@"IMEI"]) {
-        value = dynIMEI;
-    } else if ([field isEqualToString:@"X-Advertising-ID"] || [field isEqualToString:@"IDFA"] || [field isEqualToString:@"Advertising-Identifier"]) {
-        value = dynIDFA;
-    } else if ([field isEqualToString:@"X-Vendor-ID"] || [field isEqualToString:@"IDFV"]) {
-        value = dynIDFV;
-    } else if ([field isEqualToString:@"User-Agent"]) {
-        value = [NSString stringWithFormat:@"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1 AppModel/%@", dynOS, dynModel];
-    } else if ([field isEqualToString:@"X-OS-Version"] || [field isEqualToString:@"OS-Version"]) {
-        value = dynOS;
-    } else if ([field isEqualToString:@"X-Device-Model"]) {
-        value = dynModel;
-    } else if ([field isEqualToString:@"X-ISP"] || [field isEqualToString:@"X-Carrier"]) {
-        value = @"Charter Communications";
-    }
-
-    %orig(value, field);
-}
-%end
-
-%hook NSURLSession
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable))completionHandler {
-    NSMutableURLRequest *mutableReq = [request mutableCopy];
-    
-    NSString *dynIP = randomSpectrumIP();
-    NSString *dynDNS = randomSpectrumDNS();
-    NSString *dynIMEI = randomIMEI();
-    NSString *dynIDFA = randomUUID();
-    NSString *dynIDFV = randomUUID();
-    NSString *dynOS = randomOSVersion();
-    NSString *dynModel = randomDeviceModel();
-    NSString *timestamp = generateTimestamp();
-    
-    [mutableReq setValue:dynIP forHTTPHeaderField:@"X-Forwarded-For"];
-    [mutableReq setValue:dynIP forHTTPHeaderField:@"Client-IP"];
-    [mutableReq setValue:dynDNS forHTTPHeaderField:@"X-DNS-Server"];
-    [mutableReq setValue:dynIMEI forHTTPHeaderField:@"X-Device-IMEI"];
-    [mutableReq setValue:dynIDFA forHTTPHeaderField:@"X-Advertising-ID"];
-    [mutableReq setValue:dynIDFV forHTTPHeaderField:@"X-Vendor-ID"];
-    [mutableReq setValue:timestamp forHTTPHeaderField:@"X-Request-Timestamp"];
-    [mutableReq setValue:@"Charter Communications" forHTTPHeaderField:@"X-ISP"];
-    [mutableReq setValue:dynOS forHTTPHeaderField:@"X-OS-Version"];
-    [mutableReq setValue:dynModel forHTTPHeaderField:@"X-Device-Model"];
-    [mutableReq setValue:[NSString stringWithFormat:@"Mozilla/5.0 (iPhone; CPU iPhone OS %@ like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", dynOS] forHTTPHeaderField:@"User-Agent"];
-    
-    void (^wrappedHandler)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable) = ^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-        logGodModeEvent(@"NSURLSession", request.HTTPMethod, request.URL.absoluteString, httpResp.statusCode, data, error);
-        if (completionHandler) completionHandler(data, response, error);
-    };
-    
-    return %orig(mutableReq, wrappedHandler);
-}
-
-- (NSURLSessionDataTask *)dataTaskWithURL:(NSURL *)url completionHandler:(void (^)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable))completionHandler {
-    NSString *dynamicIP = randomSpectrumIP();
-    NSString *urlString = [url absoluteString];
-    
-    if ([urlString containsString:@"ip="]) {
-        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"ip=([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)" options:0 error:nil];
-        urlString = [regex stringByReplacingMatchesInString:urlString options:0 range:NSMakeRange(0, [urlString length]) withTemplate:[NSString stringWithFormat:@"ip=%@", dynamicIP]];
-        url = [NSURL URLWithString:urlString] ?: url;
-    }
-    
-    return %orig(url, completionHandler);
-}
-%end
-
+// --- حقن بروتوكول FLEX الشامل في جلسات النظام الافتراضية ---
 %hook NSURLSessionConfiguration
 + (NSURLSessionConfiguration *)defaultSessionConfiguration {
     NSURLSessionConfiguration *config = %orig;
@@ -523,12 +563,24 @@ void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSIntege
     }
     return config;
 }
+
++ (NSURLSessionConfiguration *)ephemeralSessionConfiguration {
+    NSURLSessionConfiguration *config = %orig;
+    NSMutableArray *protocols = [config.protocolClasses mutableCopy];
+    if (!protocols) protocols = [NSMutableArray array];
+    if (![protocols containsObject:[GodModeNetworkProtocol class]]) {
+        [protocols insertObject:[GodModeNetworkProtocol class] atIndex:0];
+        config.protocolClasses = protocols;
+    }
+    return config;
+}
 %end
 
-// --- تهيئة التويك عند بدء التشغيل بدون أي مسح عشوائي للبيانات ---
+// --- تهيئة التويك وعرض المربع العائم عند التشغيل ---
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [NSURLProtocol registerClass:[GodModeNetworkProtocol class]];
+        [FLEXNetworkViewerWindow sharedInstance];
         checkAndEnforceValidAccount();
     });
 }
