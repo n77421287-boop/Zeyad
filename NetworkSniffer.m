@@ -60,30 +60,7 @@ NSString *getStatePlistPath(void) {
     return [libraryDirectory stringByAppendingPathComponent:@"AccountSwitchState.plist"];
 }
 
-// --- جلب وحفظ الـ UUIDs الثلاثة من الملف (AccountSwitchState.plist) ---
-NSString *getCustomAccountUUID(NSString *key, NSString *fallback) {
-    NSString *path = getStatePlistPath();
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-    if (dict && dict[key]) {
-        NSString *val = dict[key];
-        if (val.length > 0) return val;
-    }
-    return fallback;
-}
-
-void setCustomAccountUUID(NSString *key, NSString *uuid) {
-    if (!uuid || uuid.length == 0) return;
-    NSString *path = getStatePlistPath();
-    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithContentsOfFile:path];
-    if (!dict) {
-        dict = [NSMutableDictionary dictionary];
-    }
-    dict[key] = uuid;
-    [dict writeToFile:path atomically:YES];
-    saveStateBackupToKeychain(dict);
-}
-
-// --- إدارة الـ Keychain للـ UUID الحالي للجهاز ---
+// --- إدارة الـ Keychain للـ UUID الحالي للجهاز والنسخ الاحتياطي ---
 NSString *getAppCurrentUUIDFromKeychain(void) {
     NSDictionary *query = @{
         (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
@@ -155,6 +132,29 @@ NSDictionary *loadStateBackupFromKeychain(void) {
         }
     }
     return nil;
+}
+
+// --- جلب وحفظ الـ UUIDs الثلاثة من الملف (AccountSwitchState.plist) ---
+NSString *getCustomAccountUUID(NSString *key, NSString *fallback) {
+    NSString *path = getStatePlistPath();
+    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (dict && dict[key]) {
+        NSString *val = dict[key];
+        if (val.length > 0) return val;
+    }
+    return fallback;
+}
+
+void setCustomAccountUUID(NSString *key, NSString *uuid) {
+    if (!uuid || uuid.length == 0) return;
+    NSString *path = getStatePlistPath();
+    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithContentsOfFile:path];
+    if (!dict) {
+        dict = [NSMutableDictionary dictionary];
+    }
+    dict[key] = uuid;
+    [dict writeToFile:path atomically:YES];
+    saveStateBackupToKeychain(dict);
 }
 
 // --- مسح الـ Keychain بالكامل ما عدا النسخة الاحتياطية لملف الحالة ---
@@ -327,22 +327,18 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
                                                                    message:msg
                                                             preferredStyle:UIAlertControllerStyleAlert];
     
-    // خيار التبديل للحساب الأول
     [alert addAction:[UIAlertAction actionWithTitle:@"🔄 التبديل إلى الحساب (1)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         executeSwitchAndCleanToAccount(acc1);
     }]];
     
-    // خيار التبديل للحساب الثاني
     [alert addAction:[UIAlertAction actionWithTitle:@"🔄 التبديل إلى الحساب (2)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         executeSwitchAndCleanToAccount(acc2);
     }]];
     
-    // خيار التبديل للحساب الثالث
     [alert addAction:[UIAlertAction actionWithTitle:@"🔄 التبديل إلى الحساب (3)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         executeSwitchAndCleanToAccount(acc3);
     }]];
     
-    // زر تعديل الـ UUIDs الخاصة بالحسابات
     [alert addAction:[UIAlertAction actionWithTitle:@"✏️ تعديل الـ UUIDs للحسابات" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         [self openEditUUIDsPrompt:rootVC];
     }]];
@@ -385,7 +381,6 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
         if (tf2.text.length > 0) setCustomAccountUUID(@"Account2_UUID", tf2.text);
         if (tf3.text.length > 0) setCustomAccountUUID(@"Account3_UUID", tf3.text);
         
-        // إشعار بالنجاح
         UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم الحفظ" message:@"تم تحديث وتخزين الـ UUIDs في الملف بنجاح." preferredStyle:UIAlertControllerStyleAlert];
         [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
         [parentVC presentViewController:successAlert animated:YES completion:nil];
