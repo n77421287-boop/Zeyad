@@ -13,10 +13,11 @@ static NSString * const kKeychainAccount       = @"com.tempnum.virtualnumber.dev
 static NSString * const kKeychainStateBackup   = @"com.tempnum.virtualnumber.stateBackup";
 static NSString * const kKeychainGroup         = @"3J96GNXKKU.*";
 
-// قيم افتراضية أولية للحسابات الثلاثة
+// قيم افتراضية أولية للحسابات الأربعة
 static NSString * const kDefaultAcc1_UUID = @"1A2B3C4D-5E5F-7A8B-9C0F-1E2F3A4B5C6D";
 static NSString * const kDefaultAcc2_UUID = @"2B3C4E5E-6F75-8B9C-0D1E-2F3A4B5C6DFE";
 static NSString * const kDefaultAcc3_UUID = @"3C4D5E6F-7A85-9C0D-1E2F-3A4B5C6D7F8F";
+static NSString * const kDefaultAcc4_UUID = @"4D5E6F7A-8B95-0C1D-2E3F-4A5B6C7DFE9F";
 
 // --- دوال مساعدة لإنشاء هويات عشوائية ---
 static NSString *randomUUID() {
@@ -134,7 +135,7 @@ NSDictionary *loadStateBackupFromKeychain(void) {
     return nil;
 }
 
-// --- جلب وحفظ الـ UUIDs الثلاثة من الملف (AccountSwitchState.plist) ---
+// --- جلب وحفظ الـ UUIDs من الملف ---
 NSString *getCustomAccountUUID(NSString *key, NSString *fallback) {
     NSString *path = getStatePlistPath();
     NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
@@ -266,9 +267,51 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
     exit(0);
 }
 
-// --- واجهة الزر العائم لإدارة الحسابات ---
+// --- دالة التبديل التسلسلي التلقائي ---
+void performSequentialAutoSwitch(void) {
+    NSString *path = getStatePlistPath();
+    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithContentsOfFile:path];
+    if (!dict) {
+        dict = [NSMutableDictionary dictionary];
+    }
+    
+    NSInteger currentStep = dict[@"AutoSequenceStep"] ? [dict[@"AutoSequenceStep"] integerValue] : 1;
+    NSString *targetUUID = nil;
+    NSInteger nextStep = 1;
+    
+    NSString *acc1 = getCustomAccountUUID(@"Account1_UUID", kDefaultAcc1_UUID);
+    NSString *acc2 = getCustomAccountUUID(@"Account2_UUID", kDefaultAcc2_UUID);
+    NSString *acc3 = getCustomAccountUUID(@"Account3_UUID", kDefaultAcc3_UUID);
+    NSString *acc4 = getCustomAccountUUID(@"Account4_UUID", kDefaultAcc4_UUID);
+    
+    if (currentStep == 1) {
+        targetUUID = acc2;
+        nextStep = 2;
+    } else if (currentStep == 2) {
+        targetUUID = acc3;
+        nextStep = 3;
+    } else if (currentStep == 3) {
+        targetUUID = acc4;
+        nextStep = 4;
+    } else {
+        targetUUID = acc1;
+        nextStep = 1;
+    }
+    
+    dict[@"AutoSequenceStep"] = @(nextStep);
+    dict[@"TimerRemaining"] = @(300); // إعادة تعيين العداد لـ 5 دقائق جديدة
+    [dict writeToFile:path atomically:YES];
+    saveStateBackupToKeychain(dict);
+    
+    executeSwitchAndCleanToAccount(targetUUID);
+}
+
+// --- واجهة المربع الصغير العائم (العداد وزر الإعدادات) أعلى الشاشة على اليمين ---
 @interface AccountManagerButtonView : UIView
 @property (nonatomic, strong) UIButton *floatingButton;
+@property (nonatomic, strong) UILabel *timerLabel;
+@property (nonatomic, strong) NSTimer *countdownTimer;
+@property (nonatomic, assign) NSInteger remainingSeconds;
 - (void)openManagerMenu;
 - (void)openEditUUIDsPrompt:(UIViewController *)parentVC;
 @end
@@ -279,7 +322,9 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
     static AccountManagerButtonView *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sharedInstance = [[AccountManagerButtonView alloc] initWithFrame:CGRectMake(15, 100, 50, 50)];
+        // تم تغيير الإحداثيات لتكون أعلى الشاشة على اليمين (عرض 120، ارتفاع 50)
+        CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+        sharedInstance = [[AccountManagerButtonView alloc] initWithFrame:CGRectMake(screenWidth - 135, 45, 120, 50)];
     });
     return sharedInstance;
 }
@@ -287,20 +332,84 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        self.floatingButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        self.floatingButton.frame = self.bounds;
-        [self.floatingButton setTitle:@"⚙️" forState:UIControlStateNormal];
-        self.floatingButton.titleLabel.font = [UIFont systemFontOfSize:24];
-        self.floatingButton.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.7];
-        self.layer.cornerRadius = 25;
+        self.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.8];
+        self.layer.cornerRadius = 8;
         self.layer.borderWidth = 1.0;
         self.layer.borderColor = [UIColor greenColor].CGColor;
         self.clipsToBounds = YES;
         
+        // زر الإعدادات / القائمة (يمين المربع الصغير)
+        self.floatingButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.floatingButton.frame = CGRectMake(80, 5, 35, 40);
+        [self.floatingButton setTitle:@"⚙️" forState:UIControlStateNormal];
+        self.floatingButton.titleLabel.font = [UIFont systemFontOfSize:20];
         [self.floatingButton addTarget:self action:@selector(openManagerMenu) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:self.floatingButton];
+        
+        // ليبل العد التنازلي واسم الحساب ورقمة (يسار المربع الصغير)
+        self.timerLabel = [[UILabel alloc] initWithFrame:CGRectMake(5, 3, 75, 44)];
+        self.timerLabel.textColor = [UIColor greenColor];
+        self.timerLabel.font = [UIFont boldSystemFontOfSize:9.5];
+        self.timerLabel.textAlignment = NSTextAlignmentCenter;
+        self.timerLabel.numberOfLines = 3;
+        [self addSubview:self.timerLabel];
+        
+        // جلب الثواني المتبقية من الملف أو البدء بـ 300 ثانية (5 دقائق)
+        NSString *path = getStatePlistPath();
+        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (dict && dict[@"TimerRemaining"]) {
+            self.remainingSeconds = [dict[@"TimerRemaining"] integerValue];
+        } else {
+            self.remainingSeconds = 300;
+        }
+        
+        [self updateTimerDisplay];
+        [self startCountdownEngine];
     }
     return self;
+}
+
+- (void)startCountdownEngine {
+    self.countdownTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(tickerStep) userInfo:nil repeats:YES];
+}
+
+- (void)tickerStep {
+    self.remainingSeconds--;
+    
+    NSString *path = getStatePlistPath();
+    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithContentsOfFile:path];
+    if (!dict) dict = [NSMutableDictionary dictionary];
+    dict[@"TimerRemaining"] = @(self.remainingSeconds);
+    [dict writeToFile:path atomically:YES];
+    
+    if (self.remainingSeconds <= 0) {
+        [self.countdownTimer invalidate];
+        self.countdownTimer = nil;
+        performSequentialAutoSwitch();
+        return;
+    }
+    
+    [self updateTimerDisplay];
+}
+
+- (void)updateTimerDisplay {
+    NSInteger mins = self.remainingSeconds / 60;
+    NSInteger secs = self.remainingSeconds % 60;
+    
+    NSString *path = getStatePlistPath();
+    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
+    NSInteger step = dict[@"AutoSequenceStep"] ? [dict[@"AutoSequenceStep"] integerValue] : 1;
+    
+    // تحديد اسم الحساب المعروض بناءً على رقمه والـ UUID الخاص به
+    NSString *accountKey = [NSString stringWithFormat:@"Account%ld_UUID", (long)step];
+    NSString *fallbackUUID = (step == 1) ? kDefaultAcc1_UUID : (step == 2) ? kDefaultAcc2_UUID : (step == 3) ? kDefaultAcc3_UUID : kDefaultAcc4_UUID;
+    NSString *uuid = getCustomAccountUUID(accountKey, fallbackUUID);
+    
+    // استخراج أول مقطع من الـ UUID ليكون اسماً مختصراً واضحاً (مثلاً: 1A2B3C4D)
+    NSString *shortName = (uuid.length >= 8) ? [uuid substringToIndex:8] : @"Account";
+    
+    // عرض رقم الحساب، اسمه المختصر، والوقت المتبقي
+    self.timerLabel.text = [NSString stringWithFormat:@"حساب %ld (%@)\n⏱ %02ld:%02ld", (long)step, shortName, (long)mins, (long)secs];
 }
 
 - (void)openManagerMenu {
@@ -322,11 +431,12 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
     NSString *acc1 = getCustomAccountUUID(@"Account1_UUID", kDefaultAcc1_UUID);
     NSString *acc2 = getCustomAccountUUID(@"Account2_UUID", kDefaultAcc2_UUID);
     NSString *acc3 = getCustomAccountUUID(@"Account3_UUID", kDefaultAcc3_UUID);
+    NSString *acc4 = getCustomAccountUUID(@"Account4_UUID", kDefaultAcc4_UUID);
     NSString *currentUUID = getAppCurrentUUIDFromKeychain();
     
-    NSString *msg = [NSString stringWithFormat:@"الحساب الحالي نشط:\n%@\n\nاختر الحساب للتبديل مع تنظيف جذري، أو اضغط تعديل الـ UUIDs.", currentUUID ?: @"غير معروف"];
+    NSString *msg = [NSString stringWithFormat:@"الحساب الحالي نشط:\n%@\n\n(يتم التبديل التلقائي كل 5 دقائق).", currentUUID ?: @"غير معروف"];
     
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"إدارة الحسابات الثلاثة"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"إدارة الحسابات والتبديل"
                                                                    message:msg
                                                             preferredStyle:UIAlertControllerStyleAlert];
     
@@ -340,6 +450,10 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
     
     [alert addAction:[UIAlertAction actionWithTitle:@"🔄 التبديل إلى الحساب (3)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         executeSwitchAndCleanToAccount(acc3);
+    }]];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"🔄 التبديل إلى الحساب (4)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        executeSwitchAndCleanToAccount(acc4);
     }]];
     
     [alert addAction:[UIAlertAction actionWithTitle:@"✏️ تعديل الـ UUIDs للحسابات" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
@@ -357,6 +471,7 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
     NSString *acc1 = getCustomAccountUUID(@"Account1_UUID", kDefaultAcc1_UUID);
     NSString *acc2 = getCustomAccountUUID(@"Account2_UUID", kDefaultAcc2_UUID);
     NSString *acc3 = getCustomAccountUUID(@"Account3_UUID", kDefaultAcc3_UUID);
+    NSString *acc4 = getCustomAccountUUID(@"Account4_UUID", kDefaultAcc4_UUID);
     
     UIAlertController *editAlert = [UIAlertController alertControllerWithTitle:@"تعديل قيم الـ UUID"
                                                                       message:@"أدخل الـ UUID الجديد لكل حساب (يحفظ في الملف):"
@@ -374,15 +489,21 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
         textField.text = acc3;
         textField.placeholder = @"UUID الحساب الثالث";
     }];
+    [editAlert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.text = acc4;
+        textField.placeholder = @"UUID الحساب الرابع";
+    }];
     
     [editAlert addAction:[UIAlertAction actionWithTitle:@"حفظ" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         UITextField *tf1 = editAlert.textFields[0];
         UITextField *tf2 = editAlert.textFields[1];
         UITextField *tf3 = editAlert.textFields[2];
+        UITextField *tf4 = editAlert.textFields[3];
         
         if (tf1.text.length > 0) setCustomAccountUUID(@"Account1_UUID", tf1.text);
         if (tf2.text.length > 0) setCustomAccountUUID(@"Account2_UUID", tf2.text);
         if (tf3.text.length > 0) setCustomAccountUUID(@"Account3_UUID", tf3.text);
+        if (tf4.text.length > 0) setCustomAccountUUID(@"Account4_UUID", tf4.text);
         
         UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم الحفظ" message:@"تم تحديث وتخزين الـ UUIDs في الملف بنجاح." preferredStyle:UIAlertControllerStyleAlert];
         [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
@@ -396,7 +517,7 @@ void executeSwitchAndCleanToAccount(NSString *targetUUID) {
 
 @end
 
-// --- إظهار الزر العائم أعلى الشاشة ---
+// --- إظهار المربع الصغير أعلى الشاشة على اليمين ---
 void setupOverlayButton(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *keyWindow = nil;
@@ -431,7 +552,10 @@ void checkAndEnforceValidAccount(void) {
             NSDictionary *defaultDict = @{
                 @"Account1_UUID": kDefaultAcc1_UUID,
                 @"Account2_UUID": kDefaultAcc2_UUID,
-                @"Account3_UUID": kDefaultAcc3_UUID
+                @"Account3_UUID": kDefaultAcc3_UUID,
+                @"Account4_UUID": kDefaultAcc4_UUID,
+                @"AutoSequenceStep": @(1),
+                @"TimerRemaining": @(300)
             };
             [defaultDict writeToFile:path atomically:YES];
             saveStateBackupToKeychain(defaultDict);
@@ -441,11 +565,13 @@ void checkAndEnforceValidAccount(void) {
     NSString *acc1 = getCustomAccountUUID(@"Account1_UUID", kDefaultAcc1_UUID);
     NSString *acc2 = getCustomAccountUUID(@"Account2_UUID", kDefaultAcc2_UUID);
     NSString *acc3 = getCustomAccountUUID(@"Account3_UUID", kDefaultAcc3_UUID);
+    NSString *acc4 = getCustomAccountUUID(@"Account4_UUID", kDefaultAcc4_UUID);
     
     NSString *currentUUID = getAppCurrentUUIDFromKeychain();
     if (![currentUUID isEqualToString:acc1] && 
         ![currentUUID isEqualToString:acc2] && 
-        ![currentUUID isEqualToString:acc3]) {
+        ![currentUUID isEqualToString:acc3] && 
+        ![currentUUID isEqualToString:acc4]) {
         
         saveUUIDToKeychain(acc1);
     }
