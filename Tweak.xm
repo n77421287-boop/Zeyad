@@ -39,6 +39,35 @@ static NSString * const kAccount10_UUID  = @"6C5B4A3F-2E1D-0C9B-8A7F-6E5D4C3B2A1
 // --- متغيرات النقاط الحية للوحة الإرشادية ---
 static NSMutableDictionary *gAccountPointsMap = nil;
 
+// --- دوال مساعدة لجلب النافذة الرئيسية بأمان تام بدون تحذيرات ---
+static UIWindow *getSafeKeyWindow(void) {
+    UIWindow *foundWindow = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                UIWindowScene *windowScene = (UIWindowScene *)scene;
+                for (UIWindow *w in windowScene.windows) {
+                    if (w.isKeyWindow) {
+                        foundWindow = w;
+                        break;
+                    }
+                }
+                if (!foundWindow && windowScene.windows.count > 0) {
+                    foundWindow = windowScene.windows.firstObject;
+                }
+            }
+            if (foundWindow) break;
+        }
+    }
+    if (!foundWindow) {
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        foundWindow = [UIApplication sharedApplication].keyWindow;
+        #pragma clang diagnostic pop
+    }
+    return foundWindow;
+}
+
 // --- دوال مساعدة لإنشاء هويات وقيم ديناميكية عشوائية ومتغيرة بالكامل لكل جلسة ---
 static NSString *randomUUID() {
     return [[NSUUID UUID] UUIDString];
@@ -374,18 +403,7 @@ void performAppDeepClean(void) {
 // --- إظهار اللوحة أعلى الشاشة ---
 void setupOverlayWindow(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *keyWindow = nil;
-        if (@available(iOS 13.0, *)) {
-            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-                    UIWindowScene *windowScene = (UIWindowScene *)scene;
-                    for (UIWindow *w in windowScene.windows) {
-                        if (w.isKeyWindow) { keyWindow = w; break; }
-                    }
-                }
-            }
-        }
-        if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+        UIWindow *keyWindow = getSafeKeyWindow();
         if (keyWindow) {
             AccountStatusOverlayView *overlay = [AccountStatusOverlayView sharedInstance];
             [keyWindow addSubview:overlay];
@@ -474,18 +492,7 @@ void handlePointsLogic(NSInteger currentPoints) {
             saveUUIDToKeychain(nextUUID);
             
             dispatch_async(dispatch_get_main_queue(), ^{
-                UIWindow *keyWindow = nil;
-                if (@available(iOS 13.0, *)) {
-                    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                        if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-                            UIWindowScene *windowScene = (UIWindowScene *)scene;
-                            for (UIWindow *w in windowScene.windows) {
-                                if (w.isKeyWindow) { keyWindow = w; break; }
-                            }
-                        }
-                    }
-                }
-                if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+                UIWindow *keyWindow = getSafeKeyWindow();
                 UIViewController *rootVC = keyWindow.rootViewController;
                 while (rootVC.presentedViewController) { rootVC = rootVC.presentedViewController; }
                 
