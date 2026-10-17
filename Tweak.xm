@@ -11,7 +11,7 @@
 #import <netdb.h>
 #import <arpa/inet.h>
 
-// --- الثوابت وإعدادات الحسابات العشرة الجديدة بالكامل (5 مجموعات) وملف الحالة ---
+// --- الثوابت وإعدادات الحسابات الستة الجديدة (3 مجموعات فقط) وملف الحالة ---
 static NSString * const kKeychainAccount       = @"com.tempnum.virtualnumber.deviceUUID";
 static NSString * const kKeychainStateBackup   = @"com.tempnum.virtualnumber.stateBackup";
 static NSString * const kKeychainGroup         = @"3J96GNXKKU.*";
@@ -27,14 +27,6 @@ static NSString * const kAccount4_UUID   = @"4F3E2D1C-0B9A-8F7E-6D5C-4B3A2F1E0D9
 // المجموعة الثالثة (حسابين) - هويات جديدة
 static NSString * const kAccount5_UUID   = @"7B6A5F4E-3D2C-1B0A-9F8E-7D6C5B4A3F2E";
 static NSString * const kAccount6_UUID   = @"2E3F4A5B-6C7D-8E9F-0A1B-2C3D4E5F6A7B";
-
-// المجموعة الرابعة (حسابين) - هويات جديدة
-static NSString * const kAccount7_UUID   = @"5D4C3B2A-1F0E-9D8C-7B6A-5F4E3D2C1B0A";
-static NSString * const kAccount8_UUID   = @"0A9B8C7D-6E5F-4A3B-2C1D-0E9F8A7B6C5D";
-
-// المجموعة الخامسة (حسابين) - هويات جديدة
-static NSString * const kAccount9_UUID   = @"3F2E1D0C-9B8A-7F6E-5D4C-3B2A1F0E9D8C";
-static NSString * const kAccount10_UUID  = @"6C5B4A3F-2E1D-0C9B-8A7F-6E5D4C3B2A1F";
 
 // --- متغيرات النقاط الحية للوحة الإرشادية ---
 static NSMutableDictionary *gAccountPointsMap = nil;
@@ -339,7 +331,7 @@ void performAppDeepClean(void) {
     static AccountStatusOverlayView *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sharedInstance = [[AccountStatusOverlayView alloc] initWithFrame:CGRectMake([UIScreen mainScreen].bounds.size.width - 170, 45, 165, 115)];
+        sharedInstance = [[AccountStatusOverlayView alloc] initWithFrame:CGRectMake([UIScreen mainScreen].bounds.size.width - 170, 45, 165, 90)];
     });
     return sharedInstance;
 }
@@ -359,9 +351,9 @@ void performAppDeepClean(void) {
         self.titleLabel.textAlignment = NSTextAlignmentCenter;
         [self addSubview:self.titleLabel];
         
-        self.detailsLabel = [[UILabel alloc] initWithFrame:CGRectMake(4, 21, 157, 90)];
+        self.detailsLabel = [[UILabel alloc] initWithFrame:CGRectMake(4, 21, 157, 65)];
         self.detailsLabel.textColor = [UIColor whiteColor];
-        self.detailsLabel.font = [UIFont systemFontOfSize:8.0];
+        self.detailsLabel.font = [UIFont systemFontOfSize:8.5];
         self.detailsLabel.numberOfLines = 0;
         self.detailsLabel.textAlignment = NSTextAlignmentRight;
         [self addSubview:self.detailsLabel];
@@ -377,26 +369,18 @@ void performAppDeepClean(void) {
     else if ([currentUUID isEqualToString:kAccount4_UUID]) currName = @"G2-2";
     else if ([currentUUID isEqualToString:kAccount5_UUID]) currName = @"G3-1";
     else if ([currentUUID isEqualToString:kAccount6_UUID]) currName = @"G3-2";
-    else if ([currentUUID isEqualToString:kAccount7_UUID]) currName = @"G4-1";
-    else if ([currentUUID isEqualToString:kAccount8_UUID]) currName = @"G4-2";
-    else if ([currentUUID isEqualToString:kAccount9_UUID]) currName = @"G5-1";
-    else if ([currentUUID isEqualToString:kAccount10_UUID]) currName = @"G5-2";
     
     self.titleLabel.text = [NSString stringWithFormat:@"الحالي: %@", currName];
     
-    NSInteger p1  = [gAccountPointsMap[kAccount1_UUID] integerValue];
-    NSInteger p2  = [gAccountPointsMap[kAccount2_UUID] integerValue];
-    NSInteger p3  = [gAccountPointsMap[kAccount3_UUID] integerValue];
-    NSInteger p4  = [gAccountPointsMap[kAccount4_UUID] integerValue];
-    NSInteger p5  = [gAccountPointsMap[kAccount5_UUID] integerValue];
-    NSInteger p6  = [gAccountPointsMap[kAccount6_UUID] integerValue];
-    NSInteger p7  = [gAccountPointsMap[kAccount7_UUID] integerValue];
-    NSInteger p8  = [gAccountPointsMap[kAccount8_UUID] integerValue];
-    NSInteger p9  = [gAccountPointsMap[kAccount9_UUID] integerValue];
-    NSInteger p10 = [gAccountPointsMap[kAccount10_UUID] integerValue];
+    NSInteger p1 = [gAccountPointsMap[kAccount1_UUID] integerValue];
+    NSInteger p2 = [gAccountPointsMap[kAccount2_UUID] integerValue];
+    NSInteger p3 = [gAccountPointsMap[kAccount3_UUID] integerValue];
+    NSInteger p4 = [gAccountPointsMap[kAccount4_UUID] integerValue];
+    NSInteger p5 = [gAccountPointsMap[kAccount5_UUID] integerValue];
+    NSInteger p6 = [gAccountPointsMap[kAccount6_UUID] integerValue];
     
-    self.detailsLabel.text = [NSString stringWithFormat:@"م١: [1]:%ld | [2]:%ld\nم٢: [1]:%ld | [2]:%ld\nم٣: [1]:%ld | [2]:%ld\nم٤: [1]:%ld | [2]:%ld\nم٥: [1]:%ld | [2]:%ld", 
-                              (long)p1, (long)p2, (long)p3, (long)p4, (long)p5, (long)p6, (long)p7, (long)p8, (long)p9, (long)p10];
+    self.detailsLabel.text = [NSString stringWithFormat:@"م١: [1]:%ld | [2]:%ld\nم٢: [1]:%ld | [2]:%ld\nم٣: [1]:%ld | [2]:%ld", 
+                              (long)p1, (long)p2, (long)p3, (long)p4, (long)p5, (long)p6];
 }
 @end
 
@@ -412,7 +396,7 @@ void setupOverlayWindow(void) {
     });
 }
 
-// --- جلب الحساب التالي للتسلسل عند 395 نقطة (بين 10 حسابات) ---
+// --- جلب الحساب التالي للتسلسل عند 395 نقطة (بين 6 حسابات / 3 مجموعات) ---
 NSString *getNextAccountUUID(void) {
     NSString *path = getStatePlistPath();
     NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithContentsOfFile:path];
@@ -436,10 +420,6 @@ NSString *getNextAccountUUID(void) {
         case 3:  nextUUID = kAccount4_UUID;  nextStep = 4;  break;
         case 4:  nextUUID = kAccount5_UUID;  nextStep = 5;  break;
         case 5:  nextUUID = kAccount6_UUID;  nextStep = 6;  break;
-        case 6:  nextUUID = kAccount7_UUID;  nextStep = 7;  break;
-        case 7:  nextUUID = kAccount8_UUID;  nextStep = 8;  break;
-        case 8:  nextUUID = kAccount9_UUID;  nextStep = 9;  break;
-        case 9:  nextUUID = kAccount10_UUID; nextStep = 10; break;
         default: nextUUID = kAccount1_UUID;  nextStep = 1;  break;
     }
     
@@ -543,11 +523,7 @@ void checkAndEnforceValidAccount(void) {
         ![currentUUID isEqualToString:kAccount3_UUID] && 
         ![currentUUID isEqualToString:kAccount4_UUID] &&
         ![currentUUID isEqualToString:kAccount5_UUID] &&
-        ![currentUUID isEqualToString:kAccount6_UUID] &&
-        ![currentUUID isEqualToString:kAccount7_UUID] &&
-        ![currentUUID isEqualToString:kAccount8_UUID] &&
-        ![currentUUID isEqualToString:kAccount9_UUID] &&
-        ![currentUUID isEqualToString:kAccount10_UUID]) {
+        ![currentUUID isEqualToString:kAccount6_UUID]) {
         
         saveUUIDToKeychain(kAccount1_UUID);
         
@@ -560,11 +536,10 @@ void checkAndEnforceValidAccount(void) {
     }
 }
 
-// --- معالجة البيانات محلياً داخل الذاكرة فور وصولها وإضافة أو تعديل قيم الـ Shake بضمان وجودها ---
+// --- معالجة البيانات محلياً داخل الذاكرة فور وصولها ---
 NSData *modifyResponseDataIfNeeded(NSString *url, NSData *data) {
     if (!data || !url) return data;
     
-    // مراقبة النقاط لتنفيذ التبديل
     if ([url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
         NSError *jsonError = nil;
         NSDictionary *jsonDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
@@ -577,27 +552,6 @@ NSData *modifyResponseDataIfNeeded(NSString *url, NSData *data) {
                 NSInteger currentPoints = [pointsVal integerValue];
                 handlePointsLogic(currentPoints);
             }
-        }
-    }
-    
-    // الطلب الاول أو الثاني الخاص بالـ shake (إذا كان الرابط يحتوي على shake)
-    if ([url containsString:@"api/v1/users/additional/shake"]) {
-        NSError *jsonError = nil;
-        NSMutableDictionary *jsonDict = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:&jsonError];
-        if (!jsonError && [jsonDict isKindOfClass:[NSDictionary class]]) {
-            NSMutableDictionary *dataObj = [jsonDict[@"data"] mutableCopy];
-            if (!dataObj) {
-                dataObj = [NSMutableDictionary dictionary];
-            }
-            
-            // إضافة القيم أو تعديلها إذا كانت موجودة لضمان تواجدها دائماً بالقيم المطلوبة
-            dataObj[@"canShake"] = @YES;
-            dataObj[@"nextShake"] = @0;
-            
-            jsonDict[@"data"] = dataObj;
-            
-            NSData *modifiedData = [NSJSONSerialization dataWithJSONObject:jsonDict options:0 error:nil];
-            if (modifiedData) return modifiedData;
         }
     }
     
@@ -615,9 +569,7 @@ NSData *modifyResponseDataIfNeeded(NSString *url, NSData *data) {
         if ([url containsString:@"api/v1/users/additional/claim/mystery-box"] && shouldBlockMysteryBoxForCurrentAccount()) {
             return YES;
         }
-        if ([url containsString:@"api/v1/users/additional/points/data"] ||
-            [url containsString:@"api/v1/users/additional/shake/data"] ||
-            [url containsString:@"api/v1/users/additional/shake"]) {
+        if ([url containsString:@"api/v1/users/additional/points/data"]) {
             if ([NSURLProtocol propertyForKey:@"GodModeHandled" inRequest:request] == nil) {
                 return YES;
             }
@@ -660,8 +612,8 @@ NSData *modifyResponseDataIfNeeded(NSString *url, NSData *data) {
     NSURLSessionDataTask *task = [session dataTaskWithRequest:newReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSData *finalData = modifyResponseDataIfNeeded(newReq.URL.absoluteString, data);
         
-        if (response) [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
         if (finalData) [self.client URLProtocol:self didLoadData:finalData];
+        if (response) [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
         if (error) [self.client URLProtocol:self didFailWithError:error];
         else [self.client URLProtocolDidFinishLoading:self];
     }];
@@ -881,12 +833,7 @@ NSData *modifyResponseDataIfNeeded(NSString *url, NSData *data) {
         url = [NSURL URLWithString:urlString] ?: url;
     }
     
-    void (^wrappedHandler)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable) = ^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSData *finalData = modifyResponseDataIfNeeded(url.absoluteString, data);
-        if (completionHandler) completionHandler(finalData, response, error);
-    };
-    
-    return %orig(url, wrappedHandler);
+    return %orig(url, completionHandler);
 }
 %end
 
