@@ -277,8 +277,8 @@ void executeFullEnvironmentRefresh() {
 
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق
-static __attribute__((constructor)) void initializeFloatingButton() {
+// استخدام الطريقة الرسمية في Theos لإطلاق الزر عبر المعالج %ctor بدلاً من الدوال التقليدية
+%ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
     });
