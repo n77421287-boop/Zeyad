@@ -181,13 +181,16 @@ void executeFullEnvironmentRefresh() {
     }
 }
 
-// 3. نافذة مخصصة مستقلة للزر العائم
+// 3. نافذة مخصصة للزر العائم تمرر اللمسات للشاشة خلفها وتستجيب للزر فقط
 @interface FloatingButtonWindow : UIWindow
+@property (nonatomic, strong) UIButton *targetButton;
 @end
 
 @implementation FloatingButtonWindow
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    return [super pointInside:point withEvent:event];
+    if (!self.targetButton) return NO;
+    CGPoint buttonPoint = [self convertPoint:point toView:self.targetButton];
+    return [self.targetButton pointInside:buttonPoint withEvent:event];
 }
 @end
 
@@ -248,12 +251,14 @@ void executeFullEnvironmentRefresh() {
         
         [refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
         
+        // ربط الزر بالنافذة لضمان تمرير اللمسات لباقي الشاشة بدقة
+        self->floatingWindow.targetButton = refreshButton;
+        
         [emptyVC.view addSubview:refreshButton];
         [self->floatingWindow setHidden:NO];
     });
 }
 
-// تم تسطيح الدوال وتجنب التداخل العميق لضمان صحة الترجمة
 - (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
     UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
                                                                            message:@"تم مسح جميع ملفات ومجلدات التطبيق والـ NSUserDefaults وزرع التوكن الجديد." 
@@ -280,19 +285,19 @@ void executeFullEnvironmentRefresh() {
                 }
             }];
         });
-    }];
+    });
 }
 
 @end
 
-// إطلاق الزر المستقل عبر %ctor
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
     });
 }
 
-// بقية الهوكات
+// بقية الهوكات والتعديلات
 %hook ATTrackingManager
 + (NSUInteger)trackingAuthorizationStatus {
     return 2;
