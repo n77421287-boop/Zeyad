@@ -11,22 +11,19 @@
 #import <netdb.h>
 #import <arpa/inet.h>
 
-// --- الثوابت وإعدادات الحسابات الستة الجديدة (3 مجموعات) وملف الحالة ---
+// --- الثوابت وإعدادات الحسابات الثلاثة (3 مجموعات - حساب واحد لكل مجموعة) وملف الحالة ---
 static NSString * const kKeychainAccount       = @"com.tempnum.virtualnumber.deviceUUID";
 static NSString * const kKeychainStateBackup   = @"com.tempnum.virtualnumber.stateBackup";
 static NSString * const kKeychainGroup         = @"3J96GNXKKU.*";
 
-// المجموعة الأولى (حسابين) - هويات جديدة
+// المجموعة الأولى (حساب 1)
 static NSString * const kAccount1_UUID   = @"8F4E2A1A-9B3D-4E7F-8A1C-2B3D4E5F6A7B";
+
+// المجموعة الثانية (حساب 1)
 static NSString * const kAccount2_UUID   = @"1C2D3E4A-5A6B-7C8D-9E0F-1A2B3C4D5E6F";
 
-// المجموعة الثانية (حسابين) - هويات جديدة
-static NSString * const kAccount3_UUID   = @"9A8B7C6A-5E4F-3A2B-1C0D-9E8F7A6B5C4D";
-static NSString * const kAccount4_UUID   = @"4F3E2D1A-0B9A-8F7E-6D5C-4B3A2F1E0D9C";
-
-// المجموعة الثالثة (حسابين) - هويات جديدة
-static NSString * const kAccount5_UUID   = @"7B6A5F4A-3D2C-1B0A-9F8E-7D6C5B4A3F2E";
-static NSString * const kAccount6_UUID   = @"2E3F4A5A-6C7D-8E9F-0A1B-2C3D4E5F6A7B";
+// المجموعة الثالثة (حساب 1)
+static NSString * const kAccount3_UUID   = @"7B6A5F4A-3D2C-1B0A-9F8E-7D6C5B4A3F2E";
 
 // --- متغيرات النقاط الحية للوحة الإرشادية ---
 static NSMutableDictionary *gAccountPointsMap = nil;
@@ -331,7 +328,7 @@ void performAppDeepClean(void) {
     static AccountStatusOverlayView *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sharedInstance = [[AccountStatusOverlayView alloc] initWithFrame:CGRectMake([UIScreen mainScreen].bounds.size.width - 170, 45, 165, 95)];
+        sharedInstance = [[AccountStatusOverlayView alloc] initWithFrame:CGRectMake([UIScreen mainScreen].bounds.size.width - 170, 45, 165, 80)];
     });
     return sharedInstance;
 }
@@ -351,9 +348,9 @@ void performAppDeepClean(void) {
         self.titleLabel.textAlignment = NSTextAlignmentCenter;
         [self addSubview:self.titleLabel];
         
-        self.detailsLabel = [[UILabel alloc] initWithFrame:CGRectMake(4, 21, 157, 70)];
+        self.detailsLabel = [[UILabel alloc] initWithFrame:CGRectMake(4, 21, 157, 55)];
         self.detailsLabel.textColor = [UIColor whiteColor];
-        self.detailsLabel.font = [UIFont systemFontOfSize:8.5];
+        self.detailsLabel.font = [UIFont systemFontOfSize:9.0];
         self.detailsLabel.numberOfLines = 0;
         self.detailsLabel.textAlignment = NSTextAlignmentRight;
         [self addSubview:self.detailsLabel];
@@ -363,24 +360,18 @@ void performAppDeepClean(void) {
 
 - (void)updateContent {
     NSString *currentUUID = getAppCurrentUUIDFromKeychain();
-    NSString *currName = @"G1-1";
-    if ([currentUUID isEqualToString:kAccount2_UUID]) currName = @"G1-2";
-    else if ([currentUUID isEqualToString:kAccount3_UUID]) currName = @"G2-1";
-    else if ([currentUUID isEqualToString:kAccount4_UUID]) currName = @"G2-2";
-    else if ([currentUUID isEqualToString:kAccount5_UUID]) currName = @"G3-1";
-    else if ([currentUUID isEqualToString:kAccount6_UUID]) currName = @"G3-2";
+    NSString *currName = @"المجموعة 1";
+    if ([currentUUID isEqualToString:kAccount2_UUID]) currName = @"المجموعة 2";
+    else if ([currentUUID isEqualToString:kAccount3_UUID]) currName = @"المجموعة 3";
     
     self.titleLabel.text = [NSString stringWithFormat:@"الحالي: %@", currName];
     
     NSInteger p1 = [gAccountPointsMap[kAccount1_UUID] integerValue];
     NSInteger p2 = [gAccountPointsMap[kAccount2_UUID] integerValue];
     NSInteger p3 = [gAccountPointsMap[kAccount3_UUID] integerValue];
-    NSInteger p4 = [gAccountPointsMap[kAccount4_UUID] integerValue];
-    NSInteger p5 = [gAccountPointsMap[kAccount5_UUID] integerValue];
-    NSInteger p6 = [gAccountPointsMap[kAccount6_UUID] integerValue];
     
-    self.detailsLabel.text = [NSString stringWithFormat:@"م١: [1]:%ld | [2]:%ld\nم٢: [1]:%ld | [2]:%ld\nم٣: [1]:%ld | [2]:%ld", 
-                              (long)p1, (long)p2, (long)p3, (long)p4, (long)p5, (long)p6];
+    self.detailsLabel.text = [NSString stringWithFormat:@"م١: %ld نقطة\nم٢: %ld نقطة\nم٣: %ld نقطة", 
+                              (long)p1, (long)p2, (long)p3];
 }
 @end
 
@@ -396,7 +387,7 @@ void setupOverlayWindow(void) {
     });
 }
 
-// --- جلب الحساب التالي للتسلسل عند 395 نقطة (بين 6 حسابات) ---
+// --- جلب الحساب التالي للتسلسل عند 395 نقطة (بين 3 مجموعات/حسابات) ---
 NSString *getNextAccountUUID(void) {
     NSString *path = getStatePlistPath();
     NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithContentsOfFile:path];
@@ -417,9 +408,6 @@ NSString *getNextAccountUUID(void) {
     switch (currentStep) {
         case 1:  nextUUID = kAccount2_UUID;  nextStep = 2;  break;
         case 2:  nextUUID = kAccount3_UUID;  nextStep = 3;  break;
-        case 3:  nextUUID = kAccount4_UUID;  nextStep = 4;  break;
-        case 4:  nextUUID = kAccount5_UUID;  nextStep = 5;  break;
-        case 5:  nextUUID = kAccount6_UUID;  nextStep = 6;  break;
         default: nextUUID = kAccount1_UUID;  nextStep = 1;  break;
     }
     
@@ -520,10 +508,7 @@ void checkAndEnforceValidAccount(void) {
     NSString *currentUUID = getAppCurrentUUIDFromKeychain();
     if (![currentUUID isEqualToString:kAccount1_UUID] && 
         ![currentUUID isEqualToString:kAccount2_UUID] && 
-        ![currentUUID isEqualToString:kAccount3_UUID] && 
-        ![currentUUID isEqualToString:kAccount4_UUID] &&
-        ![currentUUID isEqualToString:kAccount5_UUID] &&
-        ![currentUUID isEqualToString:kAccount6_UUID]) {
+        ![currentUUID isEqualToString:kAccount3_UUID]) {
         
         saveUUIDToKeychain(kAccount1_UUID);
         
