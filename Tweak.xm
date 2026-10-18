@@ -1,5 +1,5 @@
 // ============================================================================
-//  DirectClassInvocationSwitcher.m — Pure Programmatic Class Invocation Tweak
+//  DirectClassInvocationSwitcher.m — Clean & Fixed Programmatic Tweak
 // ============================================================================
 
 #import <Foundation/Foundation.h>
@@ -27,7 +27,6 @@ static BOOL g_invocationState = NO;
             g_invocationTimer = nil;
         }
         
-        // مؤقت زمني يستدعي الكلاسات برمجياً كل 5 ثوانٍ بدقة
         g_invocationTimer = [NSTimer scheduledTimerWithTimeInterval:5.0 
                                                            target:self 
                                                          selector:@selector(handleInvocationTick:) 
@@ -51,40 +50,35 @@ static BOOL g_invocationState = NO;
 
         g_invocationState = !g_invocationState;
 
-        // البحث والاستدعاء المباشر للكلاسات النشطة في شجرة الـ Views في الذاكرة
-        void (^__block invokeSwiftUIViews)(NSArray *) = ^(NSArray *subviews) {
+        // تعريف البلوك بشكل ضعيف لتفادي خطأ الـ retain cycle نهائياً
+        __block void (^__weak weakInvokeSwiftUIViews)(NSArray *) = nil;
+        void (^strongInvokeSwiftUIViews)(NSArray *) = ^(NSArray *subviews) {
             for (UIView *sub in subviews) {
                 NSString *className = NSStringFromClass([sub class]);
                 
-                // استهداف كلاسات الـ SwiftUI الفعلية التي استخرجناها
                 if ([className containsString:@"PlatformGroupContainer"] || [className containsString:@"NavigationStackHostingController"]) {
-                    
-                    // الاستدعاء البرمجي المباشر لتحديث الحالة وإجبار الـ View على إعادة التحميل والتبديل
                     [sub setNeedsLayout];
                     [sub layoutIfNeeded];
                     
-                    // محاولة استدعاء ميثودات التحديث الخاصة بالـ SwiftUI إن وجدت في وقت التشغيل
                     if ([sub respondsToSelector:@selector(updateConstraints)]) {
                         [sub updateConstraints];
                     }
-                    
-                    NSLog(@"[DirectInvocation] Invoked class programmatically: %@", className);
                 }
                 
                 if (sub.subviews.count > 0) {
-                    invokeSwiftUIViews(sub.subviews);
+                    weakInvokeSwiftUIViews(sub.subviews);
                 }
             }
         };
+        weakInvokeSwiftUIViews = strongInvokeSwiftUIViews;
 
-        invokeSwiftUIViews(keyWindow.subviews);
+        strongInvokeSwiftUIViews(keyWindow.subviews);
         
-        // استدعاء مباشر على مستوى الـ RootViewController لتحديث الـ Navigation Stack برمجياً
+        // التحديث الآمن للـ RootViewController
         UIViewController *rootVC = keyWindow.rootViewController;
-        if (rootVC) {
-            [rootVC setNeedsUpdateOfHomeIndicatorAutoHide];
-            // إجبار متحكم العرض الرئيسي على إعادة رسم الـ Container برمجياً
-            [rootVC.view setNeedsDisplay];
+        if (rootVC && rootVC.view) {
+            [rootVC.view setNeedsLayout];
+            [rootVC.view layoutIfNeeded];
         }
 
     } @catch (__unused NSException *e) {}
