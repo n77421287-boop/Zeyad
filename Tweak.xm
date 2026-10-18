@@ -1,5 +1,5 @@
 // ============================================================================
-//  LocalActionSniffer.m — Local UI Actions & Methods Tracker (Fixed)
+//  LocalActionSniffer.m — Local UI Actions & Methods Tracker (Fixed & Clean)
 // ============================================================================
 
 #import <Foundation/Foundation.h>
@@ -13,7 +13,6 @@ static NSMutableArray<NSString *> *g_actionLogs = nil;
 static void local_log_action(NSString *actionDesc) {
     if (!g_actionLogs) g_actionLogs = [NSMutableArray array];
     
-    // إضافة الحدث الجديد في الأعلى
     [g_actionLogs insertObject:actionDesc atIndex:0];
     if (g_actionLogs.count > 40) [g_actionLogs removeLastObject];
     
@@ -121,7 +120,16 @@ static void local_log_action(NSString *actionDesc) {
                 }
             }
         }
-        if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+        
+        if (!keyWindow) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                if (w.isKeyWindow) { keyWindow = w; break; }
+            }
+            #pragma clang diagnostic pop
+        }
+        
         if (!keyWindow) return;
 
         CGRect b = keyWindow.bounds;
