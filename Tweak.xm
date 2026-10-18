@@ -253,7 +253,6 @@ void executeFullEnvironmentRefresh() {
     });
 }
 
-// تم تصحيح الخطأ هنا (إزالة علامة الناقص الزائدة)
 - (void)handleRefreshButtonTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
     
@@ -278,7 +277,7 @@ void executeFullEnvironmentRefresh() {
 
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق (تم تصحيح الأقواس بدقة هنا)
 static __attribute__((constructor)) void initializeFloatingButton() {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
@@ -307,7 +306,6 @@ static __attribute__((constructor)) void initializeFloatingButton() {
 }
 %end
 
-// تم تصحيح هُوك الشبكة ليصبح بالطريقة الصحيحة للوجوس
 %hook NSMutableURLRequest
 - (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
     if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
