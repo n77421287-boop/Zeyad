@@ -127,7 +127,6 @@ void executeFullEnvironmentRefresh() {
         NSFileManager *fileManager = [NSFileManager defaultManager];
         NSString *homeDir = NSHomeDirectory();
         
-        // أ) مسح محتويات الـ Sandbox الرئيسية قسرياً (Documents, Library, tmp, etc.)
         NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
         for (NSString *item in homeContents) {
@@ -135,7 +134,6 @@ void executeFullEnvironmentRefresh() {
             [fileManager removeItemAtPath:fullPath error:&error];
         }
         
-        // ب) مسح مجلد Library بالتفصيل الدقيق
         NSArray *subDirs = @[@"Documents", @"Library/Caches", @"Library/Application Support", @"Library/Preferences", @"Library/Cookies", @"tmp"];
         for (NSString *subDir in subDirs) {
             NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
@@ -148,18 +146,11 @@ void executeFullEnvironmentRefresh() {
             }
         }
 
-        // ج) مسح نطاق الـ NSUserDefaults بالكامل بالطريقة الحديثة والآمنة
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
         if (bundleIdentifier) {
             [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
         }
-        // مسح الـ standardUserDefaults defaults مباشرة عبر حلقة المفتاح
-        NSString *appDomain = [[NSBundle mainBundle] bundleIdentifier];
-        if (appDomain) {
-            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:appDomain];
-        }
         
-        // د) مسح الـ Group Containers المرتبطة بالتطبيق
         NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
         if ([fileManager fileExistsAtPath:groupDirBase]) {
             NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
@@ -169,7 +160,6 @@ void executeFullEnvironmentRefresh() {
             }
         }
 
-        // هـ) حقن هويات وبصمات جديدة بالكامل
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSString *freshID = randomNewIDFA();
         NSString *freshDate = generateFreshTimestamp();
@@ -216,35 +206,29 @@ void executeFullEnvironmentRefresh() {
 }
 @end
 
-static FloatingButtonWindow *sharedFloatingWindow = nil;
-static UIButton *sharedRefreshButton = nil;
+// كلاس منظم الزر العائم بطريقة نظيفة 100% تتوافق مع معالج Theos
+@interface FloatingButtonManager : NSObject
++ (instancetype)sharedInstance;
+- (void)showFloatingButton;
+@end
 
-static void handleRefreshAction() {
-    if (!sharedFloatingWindow) return;
-    UIViewController *rootVC = sharedFloatingWindow.rootViewController;
-    
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
-                                                               message:@"جاري مسح كافة ملفات، بيانات وداتا التطبيق من الجذور..." 
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    
-    [rootVC presentViewController:alert animated:YES completion:^{
-        executeFullEnvironmentRefresh();
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                                       message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
-                                                                                preferredStyle:UIAlertControllerStyleAlert];
-                [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
-                [rootVC presentViewController:successAlert animated:YES completion:nil];
-            }];
-        });
-    });
+@implementation FloatingButtonManager {
+    FloatingButtonWindow *floatingWindow;
+    UIButton *refreshButton;
 }
 
-static void createAndShowFloatingButton() {
++ (instancetype)sharedInstance {
+    static FloatingButtonManager *sharedInstance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sharedInstance = [[FloatingButtonManager alloc] init];
+    });
+    return sharedInstance;
+}
+
+- (void)showFloatingButton {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (sharedFloatingWindow) return;
+        if (self->floatingWindow) return;
         
         UIWindowScene *targetScene = nil;
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -255,55 +239,71 @@ static void createAndShowFloatingButton() {
         }
         
         if (targetScene) {
-            sharedFloatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
+            self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
         } else {
-            sharedFloatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+            self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
         }
         
-        sharedFloatingWindow.windowLevel = UIWindowLevelAlert + 100;
-        sharedFloatingWindow.backgroundColor = [UIColor clearColor];
+        self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
+        self->floatingWindow.backgroundColor = [UIColor clearColor];
         
         UIViewController *emptyVC = [[UIViewController alloc] init];
         emptyVC.view.backgroundColor = [UIColor clearColor];
-        sharedFloatingWindow.rootViewController = emptyVC;
+        self->floatingWindow.rootViewController = emptyVC;
         
-        sharedRefreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        [sharedRefreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
-        [sharedRefreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        sharedRefreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
-        sharedRefreshButton.layer.cornerRadius = 20;
-        sharedRefreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
-        sharedRefreshButton.layer.shadowOffset = CGSizeMake(0, 2);
-        sharedRefreshButton.layer.shadowOpacity = 0.4;
-        sharedRefreshButton.layer.shadowRadius = 4;
+        self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
+        [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
+        self->refreshButton.layer.cornerRadius = 20;
+        self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
+        self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
+        self->refreshButton.layer.shadowOpacity = 0.4;
+        self->refreshButton.layer.shadowRadius = 4;
         
         CGRect screenBounds = [UIScreen mainScreen].bounds;
         CGFloat screenWidth = screenBounds.size.width;
-        sharedRefreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
+        self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
         
-        sharedFloatingWindow.targetButton = sharedRefreshButton;
-        [emptyVC.view addSubview:sharedRefreshButton];
-        [sharedFloatingWindow setHidden:NO];
+        [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+        
+        self->floatingWindow.targetButton = self->refreshButton;
+        [emptyVC.view addSubview:self->refreshButton];
+        [self->floatingWindow setHidden:NO];
     });
 }
 
-@interface ButtonTargetHelper : NSObject
-+ (void)buttonTapped;
-@end
-@implementation ButtonTargetHelper
-+ (void)buttonTapped {
-    handleRefreshAction();
+- (void)handleRefreshButtonTapped {
+    UIViewController *rootVC = self->floatingWindow.rootViewController;
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
+                                                               message:@"جاري مسح كافة ملفات، بيانات وداتا التطبيق من الجذور..." 
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    
+    __weak typeof(self) weakSelf = self;
+    [rootVC presentViewController:alert animated:YES completion:^{
+        executeFullEnvironmentRefresh();
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:^{
+                if (weakSelf) {
+                    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
+                                                                                           message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
+                                                                                    preferredStyle:UIAlertControllerStyleAlert];
+                    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+                    [rootVC presentViewController:successAlert animated:YES completion:nil];
+                }
+            }];
+        });
+    });
 }
+
 @end
 
-static void addTargetToButton() {
-    [sharedRefreshButton addTarget:[ButtonTargetHelper class] action:@selector(buttonTapped) forControlEvents:UIControlEventTouchUpInside];
-}
-
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق بالطريقة الرسمية
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        createAndShowFloatingButton();
-        addTargetToButton();
+        [[FloatingButtonManager sharedInstance] showFloatingButton];
     });
 }
 
