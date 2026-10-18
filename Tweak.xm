@@ -187,7 +187,6 @@ void executeFullEnvironmentRefresh() {
 
 @implementation FloatingButtonWindow
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    // السماح بالضغط على الزر وإ تمرير النقرات الأخرى إن لم تكن فوق الزر
     return [super pointInside:point withEvent:event];
 }
 @end
@@ -245,7 +244,6 @@ void executeFullEnvironmentRefresh() {
         refreshButton.layer.shadowOpacity = 0.4;
         refreshButton.layer.shadowRadius = 4;
         
-        // إحداثيات الزر على الشاشة
         refreshButton.frame = CGRectMake(20, 60, 140, 40);
         
         [refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -255,7 +253,8 @@ void executeFullEnvironmentRefresh() {
     });
 }
 
-- - (void)handleRefreshButtonTapped {
+// تم تصحيح الخطأ هنا (إزالة علامة الناقص الزائدة)
+- (void)handleRefreshButtonTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
     
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير البيئة" 
@@ -279,14 +278,14 @@ void executeFullEnvironmentRefresh() {
 
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق ليبقى ثابتاً طوال الوقت
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق
 static __attribute__((constructor)) void initializeFloatingButton() {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
     });
 }
 
-// بقية الهوكات الخاصة بالإعلانات والتتبع
+// بقية الهوكات
 %hook ATTrackingManager
 + (NSUInteger)trackingAuthorizationStatus {
     return 2;
@@ -308,8 +307,9 @@ static __attribute__((constructor)) void initializeFloatingButton() {
 }
 %end
 
+// تم تصحيح هُوك الشبكة ليصبح بالطريقة الصحيحة للوجوس
 %hook NSMutableURLRequest
-- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *field) {
+- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
     if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
         value = randomEuropeanIP();
     }
