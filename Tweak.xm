@@ -122,10 +122,8 @@ static NSString *generateFreshTimestamp() {
 // 2. دالة مركزية شاملة لتنظيف البيئة بالكامل وتوليد هوية وجهاز جديد (تُنفذ يدوياً عبر الزر فقط)
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
-        // أ) مسح الـ Keychain بالكامل ديناميكياً ثم إضافة المفتاح الجديد
         clearAllKeychainAndAddNewItem();
 
-        // ب) مسح نطاق الـ NSUserDefaults بالكامل بالطريقة الآمنة الحديثة
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
         if (bundleIdentifier) {
             [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
@@ -133,7 +131,6 @@ void executeFullEnvironmentRefresh() {
 
         NSFileManager *fileManager = [NSFileManager defaultManager];
         
-        // ج) مسح كل ملفات ومجلدات الـ Sandbox الرئيسي للتطبيق جذرياً (Documents, Library, tmp, etc.)
         NSString *homeDir = NSHomeDirectory();
         NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
@@ -142,7 +139,6 @@ void executeFullEnvironmentRefresh() {
             [fileManager removeItemAtPath:fullPath error:&error];
         }
         
-        // د) مسح كل الـ App Groups المرتبطة
         NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
         if ([fileManager fileExistsAtPath:groupDirBase]) {
             NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
@@ -152,7 +148,6 @@ void executeFullEnvironmentRefresh() {
             }
         }
 
-        // هـ) حقن هويات وبصمات جديدة بالكامل كأنه جهاز جديد تماماً
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSString *freshID = randomNewIDFA();
         NSString *freshDate = generateFreshTimestamp();
@@ -186,49 +181,83 @@ void executeFullEnvironmentRefresh() {
     }
 }
 
-// كلاس مساعد للتعامل مع الحدث عند الضغط على الزر
-@interface MyButtonHandler : NSObject
-+ (instancetype)sharedInstance;
-- (void)handleRefreshButtonTapped;
+// 3. نافذة مخصصة مستقلة للزر العائم لضمان بقائه فوق كل الصفحات وعدم تأثره بالتنقل
+@interface FloatingButtonWindow : UIWindow
 @end
 
-@implementation MyButtonHandler
+@implementation FloatingButtonWindow
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    // السماح بالضغط على الزر وإ تمرير النقرات الأخرى إن لم تكن فوق الزر
+    return [super pointInside:point withEvent:event];
+}
+@end
+
+@interface FloatingButtonManager : NSObject
++ (instancetype)sharedInstance;
+- (void)showFloatingButton;
+@end
+
+@implementation FloatingButtonManager {
+    FloatingButtonWindow *floatingWindow;
+}
 
 + (instancetype)sharedInstance {
-    static MyButtonHandler *sharedInstance = nil;
+    static FloatingButtonManager *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sharedInstance = [[MyButtonHandler alloc] init];
+        sharedInstance = [[FloatingButtonManager alloc] init];
     });
     return sharedInstance;
 }
 
-- (void)handleRefreshButtonTapped {
-    // الطريقة الحديثة المتوافقة مع iOS 13+ لجلب الـ Window والـ RootViewController النشطة بدون استخدام keyWindow الملغاة
-    UIWindow *targetWindow = nil;
-    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (scene.activationState == UISceneActivationStateForegroundActive) {
-            for (UIWindow *window in scene.windows) {
-                if (window.isKeyWindow) {
-                    targetWindow = window;
-                    break;
-                }
+- (void)showFloatingButton {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->floatingWindow) return;
+        
+        UIWindowScene *targetScene = nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+                targetScene = (UIWindowScene *)scene;
+                break;
             }
         }
-    }
-    
-    if (!targetWindow) {
-        for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]]) {
-                targetWindow = scene.windows.firstObject;
-                if (targetWindow) break;
-            }
+        
+        if (targetScene) {
+            self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
+        } else {
+            self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
         }
-    }
+        
+        self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
+        self->floatingWindow.backgroundColor = [UIColor clearColor];
+        
+        UIViewController *emptyVC = [[UIViewController alloc] init];
+        emptyVC.view.backgroundColor = [UIColor clearColor];
+        self->floatingWindow.rootViewController = emptyVC;
+        
+        UIButton *refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
+        [refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
+        refreshButton.layer.cornerRadius = 20;
+        refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
+        refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
+        refreshButton.layer.shadowOpacity = 0.4;
+        refreshButton.layer.shadowRadius = 4;
+        
+        // إحداثيات الزر على الشاشة
+        refreshButton.frame = CGRectMake(20, 60, 140, 40);
+        
+        [refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+        
+        [emptyVC.view addSubview:refreshButton];
+        [self->floatingWindow setHidden:NO];
+    });
+}
+
+- - (void)handleRefreshButtonTapped {
+    UIViewController *rootVC = self->floatingWindow.rootViewController;
     
-    UIViewController *rootVC = targetWindow.rootViewController;
-    
-    // تم تصحيح اسم الدالة إلى alertControllerWithTitle بدلاً من alertControllerTitle
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير البيئة" 
                                                                message:@"جاري مسح كافة ملفات ومجلدات التطبيق والـ Keychain..." 
                                                         preferredStyle:UIAlertControllerStyleAlert];
@@ -245,43 +274,19 @@ void executeFullEnvironmentRefresh() {
                 [rootVC presentViewController:successAlert animated:YES completion:nil];
             }];
         });
-    }];
+    });
 }
 
 @end
 
-// حقن الزر العائم في واجهة التطبيق الرئيسية
-%hook UIWindow
-
-- (void)makeKeyAndVisible {
-    %orig;
-    
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        UIButton *refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        [refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
-        [refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
-        refreshButton.layer.cornerRadius = 20;
-        refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
-        refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
-        refreshButton.layer.shadowOpacity = 0.4;
-        refreshButton.layer.shadowRadius = 4;
-        
-        refreshButton.frame = CGRectMake(20, 60, 140, 40);
-        
-        [refreshButton addTarget:[MyButtonHandler sharedInstance] 
-                          action:@selector(handleRefreshButtonTapped) 
-                forControlEvents:UIControlEventTouchUpInside];
-        
-        [self addSubview:refreshButton];
-        [self bringSubviewToFront:refreshButton];
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق ليبقى ثابتاً طوال الوقت
+static __attribute__((constructor)) void initializeFloatingButton() {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[FloatingButtonManager sharedInstance] showFloatingButton];
     });
 }
 
-%end
-
-// 3. فرض حالة رفض التتبع على مستوى النظام برمجياً
+// بقية الهوكات الخاصة بالإعلانات والتتبع
 %hook ATTrackingManager
 + (NSUInteger)trackingAuthorizationStatus {
     return 2;
@@ -304,7 +309,7 @@ void executeFullEnvironmentRefresh() {
 %end
 
 %hook NSMutableURLRequest
-- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
+- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *field) {
     if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
         value = randomEuropeanIP();
     }
