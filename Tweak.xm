@@ -125,15 +125,10 @@ void executeFullEnvironmentRefresh() {
         // أ) مسح الـ Keychain بالكامل ديناميكياً ثم إضافة المفتاح الجديد
         clearAllKeychainAndAddNewItem();
 
-        // ب) مسح نطاق الـ NSUserDefaults بالكامل (للتطبيق والمكتبات الخارجية)
+        // ب) مسح نطاق الـ NSUserDefaults بالكامل بالطريقة الآمنة الحديثة
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
         if (bundleIdentifier) {
             [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-            
-            NSDictionary *persistentDomains = [[NSUserDefaults standardUserDefaults] persistentDomainNames];
-            for (NSString *domain in persistentDomains) {
-                [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:domain];
-            }
         }
 
         NSFileManager *fileManager = [NSFileManager defaultManager];
@@ -191,8 +186,6 @@ void executeFullEnvironmentRefresh() {
     }
 }
 
-// ملاحظة: تم إلغاء التنفيذ التلقائي عند إقلاع التطبيق (initialAppLaunchSetup تم حذفها تماماً)
-
 // كلاس مساعد للتعامل مع الحدث عند الضغط على الزر
 @interface MyButtonHandler : NSObject
 + (instancetype)sharedInstance;
@@ -211,15 +204,25 @@ void executeFullEnvironmentRefresh() {
 }
 
 - (void)handleRefreshButtonTapped {
-    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
-    UIViewController *rootVC = keyWindow.rootViewController;
+    // الطريقة الحديثة المتوافقة مع iOS 13+ لجلب الـ Window النشطة
+    UIWindow *targetWindow = nil;
+    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (scene.activationState == UISceneActivationStateForegroundActive) {
+            for (UIWindow *window in scene.windows) {
+                if (window.isKeyWindow) {
+                    targetWindow = window;
+                    break;
+                }
+            }
+        }
+    }
+    UIViewController *rootVC = targetWindow.rootViewController ?: [UIApplication sharedApplication].keyWindow.rootViewController;
     
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير البيئة" 
+    UIAlertController *alert = [UIAlertController alertControllerTitle:@"تنظيف وتطهير البيئة" 
                                                                message:@"جاري مسح كافة ملفات ومجلدات التطبيق والـ Keychain..." 
                                                         preferredStyle:UIAlertControllerStyleAlert];
     
     [rootVC presentViewController:alert animated:YES completion:^{
-        // التطهير يتم فقط عند الضغط اليدوي على الزر
         executeFullEnvironmentRefresh();
         
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -298,7 +301,6 @@ void executeFullEnvironmentRefresh() {
 }
 %end
 
-// تحصين الإعلانات دون تفريغ تلقائي للبيئة عند انتهائها
 %hook ActivatorAdService
 
 - (BOOL)isReady {
@@ -324,7 +326,6 @@ void executeFullEnvironmentRefresh() {
 - (void)showRewardAd {
     @try {
         %orig;
-        NSLog(@">>> [Manual-Mode] showRewardAd executed (No automatic reset).");
     } @catch (NSException *exception) {
         NSLog(@">>> [Dynamic-Refresh] Exception in showRewardAd: %@", exception.reason);
     }
@@ -339,7 +340,6 @@ void executeFullEnvironmentRefresh() {
 }
 
 - (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
-    NSLog(@">>> [Manual-Mode] Ad error intercepted (No automatic reset).");
     id targetSelf = self;
     if ([targetSelf respondsToSelector:@selector(loadAd)]) {
         [targetSelf loadAd];
