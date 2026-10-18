@@ -1,104 +1,104 @@
 // ============================================================================
-//  InternalAppActionsSniffer.m — Top Overlay Version
+//  UltimateClassIntrospector.m — Deep Runtime Class Introspector
 // ============================================================================
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-static UIView     *g_internalOverlay     = nil;
-static UITextView *g_internalOverlayText = nil;
-static NSMutableArray<NSString *> *g_internalLogs = nil;
+static UIView     *g_ultimateOverlay  = nil;
+static UITextView *g_ultimateTextView = nil;
 
-static void internal_log(NSString *desc) {
-    if (!g_internalLogs) g_internalLogs = [NSMutableArray array];
-    [g_internalLogs insertObject:desc atIndex:0];
-    if (g_internalLogs.count > 40) [g_internalLogs removeLastObject];
+static void introspectClass(Class cls, UIView *view) {
+    if (!cls) return;
+    
+    NSMutableString *report = [NSMutableString string];
+    [report appendFormat:@"=== CLASS INTROSPECTION ===\n"];
+    [report appendFormat:@"Class: %@\n", NSStringFromClass(cls)];
+    [report appendFormat:@"Superclass: %@\n\n", NSStringFromClass([cls superclass])];
+    
+    // 1. استخراج الخصائص (Properties)
+    [report appendString:@"--- Properties ---\n"];
+    unsigned int propCount = 0;
+    objc_property_t *properties = class_copyPropertyList(cls, &propCount);
+    for (unsigned int i = 0; i < propCount; i++) {
+        objc_property_t prop = properties[i];
+        const char *propName = property_getName(prop);
+        const char *propAttr = property_getAttributes(prop);
+        [report appendFormat:@"• %s (%s)\n", propName, propAttr];
+    }
+    free(properties);
+    
+    // 2. استخراج الدوال (Methods)
+    [report appendString:@"\n--- Methods (Actions/Getters) ---\n"];
+    unsigned int methodCount = 0;
+    Method *methods = class_copyMethodList(cls, &methodCount);
+    for (unsigned int i = 0; i < methodCount; i++) {
+        Method method = methods[i];
+        SEL selector = method_getName(method);
+        [report appendFormat:@"• %s\n", sel_getName(selector)];
+    }
+    free(methods);
+    
+    // 3. النص أو العنوان الظاهر إن وجد
+    if ([view respondsToSelector:@selector(text)] && [(id)view text]) {
+        [report appendFormat:@"\n[Text Value]: %@\n", [(id)view text]];
+    } else if ([view respondsToSelector:@selector(title)] && [(id)view title]) {
+        [report appendFormat:@"\n[Title Value]: %@\n", [(id)view title]];
+    }
     
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!g_internalOverlayText) return;
-        NSMutableString *s = [NSMutableString stringWithFormat:@"Internal Actions Tracker (%lu)\n=====================================\n", (unsigned long)g_internalLogs.count];
-        for (NSString *item in g_internalLogs) {
-            [s appendFormat:@"%@\n-------------------------------------\n", item];
+        if (g_ultimateTextView) {
+            g_ultimateTextView.text = report;
         }
-        g_internalOverlayText.text = s;
     });
 }
 
 // ============================================================================
-// SECTION 1 — Intercepting NSNotificationCenter (App Internal Triggers & Events)
+// SECTION — Intercepting Touches to Introspect Target Class
 // ============================================================================
 
-@interface NSNotificationCenter (InternalSniffer)
+@interface UIWindow (ClassIntrospector)
 @end
 
-@implementation NSNotificationCenter (InternalSniffer)
+@implementation UIWindow (ClassIntrospector)
 
-- (void)sniffer_postNotificationName:(NSNotificationName)aName object:(id)anObject userInfo:(NSDictionary *)aUserInfo {
-    NSString *nameStr = [aName description];
-    if (![nameStr hasPrefix:@"UI"] && ![nameStr hasPrefix:@"NS"] && ![nameStr hasPrefix:@"_"]) {
-        NSString *logMsg = [NSString stringWithFormat:@"🔔 [Notification] Name: %@", nameStr];
-        internal_log(logMsg);
+- (UIView *)intro_hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hitView = [self intro_hitTest:point withEvent:event];
+    
+    if (hitView && ![[hitView description] containsString:@"UITextView"] && hitView != g_ultimateOverlay) {
+        if (event.type == UIEventTypeTouches) {
+            NSSet *touches = [event touchesForWindow:self];
+            for (UITouch *touch in touches) {
+                if (touch.phase == UITouchPhaseBegan) {
+                    introspectClass([hitView class], hitView);
+                }
+            }
+        }
     }
-    [self sniffer_postNotificationName:aName object:anObject userInfo:aUserInfo];
+    
+    return hitView;
 }
 
 @end
 
 // ============================================================================
-// SECTION 2 — Intercepting UIViewController Actions & Lifecycle
+// Setup Introspector Overlay Window
 // ============================================================================
 
-@interface UIViewController (InternalSniffer)
+@interface ClassIntrospectorInstaller : NSObject
 @end
 
-@implementation UIViewController (InternalSniffer)
-
-- (void)sniffer_viewDidLoad {
-    [self sniffer_viewDidLoad];
-    NSString *vcName = NSStringFromClass([self class]);
-    if (![vcName hasPrefix:@"UI"] && ![vcName hasPrefix:@"_"]) {
-        NSString *logMsg = [NSString stringWithFormat:@"📱 [ViewController Load] ➔ %@", vcName];
-        internal_log(logMsg);
-    }
-}
-
-- (void)sniffer_viewDidAppear:(BOOL)animated {
-    [self sniffer_viewDidAppear:animated];
-    NSString *vcName = NSStringFromClass([self class]);
-    if (![vcName hasPrefix:@"UI"] && ![vcName hasPrefix:@"_"]) {
-        NSString *logMsg = [NSString stringWithFormat:@"👁️ [View Active] ➔ %@", vcName];
-        internal_log(logMsg);
-    }
-}
-
-@end
-
-// ============================================================================
-// SECTION 3 — Setup Overlay UI at the TOP of the screen
-// ============================================================================
-
-@interface InternalSnifferInstaller : NSObject
-@end
-
-@implementation InternalSnifferInstaller
+@implementation ClassIntrospectorInstaller
 
 + (void)load {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        Method n1 = class_getInstanceMethod([NSNotificationCenter class], @selector(postNotificationName:object:userInfo:));
-        Method n2 = class_getInstanceMethod([NSNotificationCenter class], @selector(sniffer_postNotificationName:object:userInfo:));
-        if (n1 && n2) method_exchangeImplementations(n1, n2);
+        Method m1 = class_getInstanceMethod([UIWindow class], @selector(hitTest:withEvent:));
+        Method m2 = class_getInstanceMethod([UIWindow class], @selector(intro_hitTest:withEvent:));
+        if (m1 && m2) method_exchangeImplementations(m1, m2);
 
-        Method v1 = class_getInstanceMethod([UIViewController class], @selector(viewDidLoad));
-        Method v2 = class_getInstanceMethod([UIViewController class], @selector(sniffer_viewDidLoad));
-        if (v1 && v2) method_exchangeImplementations(v1, v2);
-
-        Method a1 = class_getInstanceMethod([UIViewController class], @selector(viewDidAppear:));
-        Method a2 = class_getInstanceMethod([UIViewController class], @selector(sniffer_viewDidAppear:));
-        if (a1 && a2) method_exchangeImplementations(a1, a2);
-
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self setupOverlay];
         });
     });
@@ -117,26 +117,26 @@ static void internal_log(NSString *desc) {
 
         CGRect b = keyWindow.bounds;
         
-        // تعديل الإحداثيات لتكون في أعلى الشاشة تماماً (Y = 40 لتكون تحت الساعة وشريط الحالة)
-        g_internalOverlay = [[UIView alloc] initWithFrame:CGRectMake(10, 40, b.size.width - 20, 220)];
-        g_internalOverlay.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.95];
-        g_internalOverlay.layer.cornerRadius = 10;
-        g_internalOverlay.layer.borderWidth = 1.5;
-        g_internalOverlay.layer.borderColor = [UIColor orangeColor].CGColor;
-        g_internalOverlay.userInteractionEnabled = YES;
-        g_internalOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        g_ultimateOverlay = [[UIView alloc] initWithFrame:CGRectMake(10, 40, b.size.width - 20, 280)];
+        g_ultimateOverlay.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.97];
+        g_ultimateOverlay.layer.cornerRadius = 10;
+        g_ultimateOverlay.layer.borderWidth = 1.5;
+        g_ultimateOverlay.layer.borderColor = [UIColor yellowColor].CGColor;
+        g_ultimateOverlay.userInteractionEnabled = YES;
+        g_ultimateOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
-        g_internalOverlayText = [[UITextView alloc] initWithFrame:CGRectMake(5, 5, g_internalOverlay.bounds.size.width - 10, g_internalOverlay.bounds.size.height - 10)];
-        g_internalOverlayText.backgroundColor = [UIColor clearColor];
-        g_internalOverlayText.textColor = [UIColor orangeColor];
-        g_internalOverlayText.font = [UIFont fontWithName:@"Courier-Bold" size:8.0] ?: [UIFont systemFontOfSize:8.0];
-        g_internalOverlayText.editable = NO;
-        g_internalOverlayText.text = @"[+] Top Tracker Ready...\n";
-        g_internalOverlayText.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        g_ultimateTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, 5, g_ultimateOverlay.bounds.size.width - 10, g_ultimateOverlay.bounds.size.height - 10)];
+        g_ultimateTextView.backgroundColor = [UIColor clearColor];
+        g_ultimateTextView.textColor = [UIColor yellowColor];
+        g_ultimateTextView.font = [UIFont fontWithName:@"Courier-Bold" size:8.0] ?: [UIFont systemFontOfSize:8.0];
+        g_ultimateTextView.editable = NO;
+        g_ultimateTextView.text = @"[+] Deep Class Introspector Ready. Tap any button...\n";
+        g_ultimateTextView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 
-        [g_internalOverlay addSubview:g_internalOverlayText];
-        [keyWindow addSubview:g_internalOverlay];
-        [keyWindow bringSubviewToFront:g_internalOverlay];
+        [g_ultimateOverlay addSubview:g_ultimateTextView];
+        [keyWindow addSubview:g_ultimateOverlay];
+        [keyWindow bringSubviewToFront:g_ultimateOverlay];
+        
     } @catch (__unused NSException *e) {}
 }
 
