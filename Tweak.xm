@@ -122,7 +122,6 @@ static NSString *generateFreshTimestamp() {
 // 2. دالة تنظيف شاملة وجذرية لكل ملفات ومجلدات و بيانات التطبيق بنسبة 100%
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
-        // مسح الـ Keychain
         clearAllKeychainAndAddNewItem();
 
         NSFileManager *fileManager = [NSFileManager defaultManager];
@@ -136,7 +135,7 @@ void executeFullEnvironmentRefresh() {
             [fileManager removeItemAtPath:fullPath error:&error];
         }
         
-        // ب) مسح مجلد Library بالتفصيل الدقيق (Application Support, Caches, Preferences, Cookies) لضمان عدم بقاء أي بيانات مخفية
+        // ب) مسح مجلد Library بالتفصيل الدقيق
         NSArray *subDirs = @[@"Documents", @"Library/Caches", @"Library/Application Support", @"Library/Preferences", @"Library/Cookies", @"tmp"];
         for (NSString *subDir in subDirs) {
             NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
@@ -149,15 +148,15 @@ void executeFullEnvironmentRefresh() {
             }
         }
 
-        // ج) مسح نطاق الـ NSUserDefaults بالكامل وتصفيره
+        // ج) مسح نطاق الـ NSUserDefaults بالكامل بالطريقة الحديثة والآمنة
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
         if (bundleIdentifier) {
             [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-            // مسح أي دومينات إضافية قد تكون مسجلة
-            NSDictionary *persistentDomains = [[NSUserDefaults standardUserDefaults] persistentDomainNames];
-            for (NSString *domain in persistentDomains) {
-                [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:domain];
-            }
+        }
+        // مسح الـ standardUserDefaults defaults مباشرة عبر حلقة المفتاح
+        NSString *appDomain = [[NSBundle mainBundle] bundleIdentifier];
+        if (appDomain) {
+            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:appDomain];
         }
         
         // د) مسح الـ Group Containers المرتبطة بالتطبيق
