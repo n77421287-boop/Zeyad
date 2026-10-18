@@ -119,7 +119,7 @@ static NSString *generateFreshTimestamp() {
     return [formatter stringFromDate:now];
 }
 
-// 2. دالة مركزية شاملة لتنظيف البيئة بالكامل وتوليد هوية وجهاز جديد (تُنفذ يدوياً عبر الزر فقط)
+// 2. دالة مركزية شاملة لتنظيف البيئة بالكامل وتوليد هوية وجهاز جديد
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
         clearAllKeychainAndAddNewItem();
@@ -253,6 +253,15 @@ void executeFullEnvironmentRefresh() {
     });
 }
 
+// تم تسطيح الدوال وتجنب التداخل العميق لضمان صحة الترجمة
+- (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
+    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
+                                                                           message:@"تم مسح جميع ملفات ومجلدات التطبيق والـ NSUserDefaults وزرع التوكن الجديد." 
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+    [rootVC presentViewController:successAlert animated:YES completion:nil];
+}
+
 - (void)handleRefreshButtonTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
     
@@ -260,24 +269,23 @@ void executeFullEnvironmentRefresh() {
                                                                message:@"جاري مسح كافة ملفات ومجلدات التطبيق والـ Keychain..." 
                                                         preferredStyle:UIAlertControllerStyleAlert];
     
+    __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh();
         
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [alert dismissViewControllerAnimated:YES completion:^{
-                UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                                       message:@"تم مسح جميع ملفات ومجلدات التطبيق والـ NSUserDefaults وزرع التوكن الجديد." 
-                                                                                preferredStyle:UIAlertControllerStyleAlert];
-                [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
-                [rootVC presentViewController:successAlert animated:YES completion:nil];
+                if (weakSelf) {
+                    [weakSelf showSuccessAlertFromRoot:rootVC];
+                }
             }];
         });
-    });
+    }];
 }
 
 @end
 
-// استخدام الطريقة الرسمية في Theos لإطلاق الزر عبر المعالج %ctor بدلاً من الدوال التقليدية
+// إطلاق الزر المستقل عبر %ctor
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
