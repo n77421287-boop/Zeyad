@@ -247,11 +247,12 @@ void executeFullEnvironmentRefresh() {
         refreshButton.layer.shadowOpacity = 0.4;
         refreshButton.layer.shadowRadius = 4;
         
-        refreshButton.frame = CGRectMake(20, 60, 140, 40);
+        // تم تغيير موقع الزر ليصبح في اليمين (عرض الشاشة - عرض الزر 140 - هوامش 20)
+        CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+        refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
         
         [refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
         
-        // ربط الزر بالنافذة لضمان تمرير اللمسات لباقي الشاشة بدقة
         self->floatingWindow.targetButton = refreshButton;
         
         [emptyVC.view addSubview:refreshButton];
