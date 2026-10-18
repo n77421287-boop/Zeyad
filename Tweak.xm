@@ -204,7 +204,7 @@ void executeFullEnvironmentRefresh() {
 }
 
 - (void)handleRefreshButtonTapped {
-    // الطريقة الحديثة المتوافقة مع iOS 13+ لجلب الـ Window النشطة
+    // الطريقة الحديثة المتوافقة مع iOS 13+ لجلب الـ Window والـ RootViewController النشطة بدون استخدام keyWindow الملغاة
     UIWindow *targetWindow = nil;
     for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (scene.activationState == UISceneActivationStateForegroundActive) {
@@ -216,9 +216,20 @@ void executeFullEnvironmentRefresh() {
             }
         }
     }
-    UIViewController *rootVC = targetWindow.rootViewController ?: [UIApplication sharedApplication].keyWindow.rootViewController;
     
-    UIAlertController *alert = [UIAlertController alertControllerTitle:@"تنظيف وتطهير البيئة" 
+    if (!targetWindow) {
+        for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                targetWindow = scene.windows.firstObject;
+                if (targetWindow) break;
+            }
+        }
+    }
+    
+    UIViewController *rootVC = targetWindow.rootViewController;
+    
+    // تم تصحيح اسم الدالة إلى alertControllerWithTitle بدلاً من alertControllerTitle
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير البيئة" 
                                                                message:@"جاري مسح كافة ملفات ومجلدات التطبيق والـ Keychain..." 
                                                         preferredStyle:UIAlertControllerStyleAlert];
     
