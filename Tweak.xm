@@ -206,10 +206,10 @@ void executeFullEnvironmentRefresh() {
 }
 @end
 
-// كلاس منظم الزر العائم بطريقة نظيفة 100% تتوافق مع معالج Theos
 @interface FloatingButtonManager : NSObject
 + (instancetype)sharedInstance;
 - (void)showFloatingButton;
+- (void)showAlertAfterDelay:(UIAlertController *)alert rootVC:(UIViewController *)rootVC;
 @end
 
 @implementation FloatingButtonManager {
@@ -227,50 +227,58 @@ void executeFullEnvironmentRefresh() {
 }
 
 - (void)showFloatingButton {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (self->floatingWindow) return;
-        
-        UIWindowScene *targetScene = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                targetScene = (UIWindowScene *)scene;
-                break;
-            }
+    if (self->floatingWindow) return;
+    
+    UIWindowScene *targetScene = nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+            targetScene = (UIWindowScene *)scene;
+            break;
         }
-        
-        if (targetScene) {
-            self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
-        } else {
-            self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        }
-        
-        self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
-        self->floatingWindow.backgroundColor = [UIColor clearColor];
-        
-        UIViewController *emptyVC = [[UIViewController alloc] init];
-        emptyVC.view.backgroundColor = [UIColor clearColor];
-        self->floatingWindow.rootViewController = emptyVC;
-        
-        self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
-        [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
-        self->refreshButton.layer.cornerRadius = 20;
-        self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
-        self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
-        self->refreshButton.layer.shadowOpacity = 0.4;
-        self->refreshButton.layer.shadowRadius = 4;
-        
-        CGRect screenBounds = [UIScreen mainScreen].bounds;
-        CGFloat screenWidth = screenBounds.size.width;
-        self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
-        
-        [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
-        
-        self->floatingWindow.targetButton = self->refreshButton;
-        [emptyVC.view addSubview:self->refreshButton];
-        [self->floatingWindow setHidden:NO];
-    });
+    }
+    
+    if (targetScene) {
+        self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
+    } else {
+        self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    }
+    
+    self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
+    self->floatingWindow.backgroundColor = [UIColor clearColor];
+    
+    UIViewController *emptyVC = [[UIViewController alloc] init];
+    emptyVC.view.backgroundColor = [UIColor clearColor];
+    self->floatingWindow.rootViewController = emptyVC;
+    
+    self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
+    [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
+    self->refreshButton.layer.cornerRadius = 20;
+    self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
+    self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
+    self->refreshButton.layer.shadowOpacity = 0.4;
+    self->refreshButton.layer.shadowRadius = 4;
+    
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    CGFloat screenWidth = screenBounds.size.width;
+    self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
+    
+    [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+    
+    self->floatingWindow.targetButton = self->refreshButton;
+    [emptyVC.view addSubview:self->refreshButton];
+    [self->floatingWindow setHidden:NO];
+}
+
+- (void)showAlertAfterDelay:(UIAlertController *)alert rootVC:(UIViewController *)rootVC {
+    [alert dismissViewControllerAnimated:YES completion:^{
+        UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
+                                                                               message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
+                                                                        preferredStyle:UIAlertControllerStyleAlert];
+        [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+        [rootVC presentViewController:successAlert animated:YES completion:nil];
+    }];
 }
 
 - (void)handleRefreshButtonTapped {
@@ -280,27 +288,15 @@ void executeFullEnvironmentRefresh() {
                                                                message:@"جاري مسح كافة ملفات، بيانات وداتا التطبيق من الجذور..." 
                                                         preferredStyle:UIAlertControllerStyleAlert];
     
-    __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh();
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                if (weakSelf) {
-                    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                                           message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
-                                                                                    preferredStyle:UIAlertControllerStyleAlert];
-                    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
-                    [rootVC presentViewController:successAlert animated:YES completion:nil];
-                }
-            }];
-        });
-    });
+        [self performSelector:@selector(showAlertAfterDelay:rootVC:) withObject:alert withObject:rootVC afterDelay:1.0];
+    }];
 }
 
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق بالطريقة الرسمية
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق بالطريقة المتوافقة تماماً مع معالج Theos
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
