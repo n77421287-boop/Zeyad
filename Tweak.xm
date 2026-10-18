@@ -2,9 +2,9 @@
 #import <UIKit/UIKit.h>
 #import <AdSupport/AdSupport.h>
 #import <AppTrackingTransparency/AppTrackingTransparency.h>
+#import <Security/Security.h>
 #import <objc/runtime.h>
 
-// إعلان مسبق شامل لكل الدوال المحتملة لمدير الإعلانات
 @interface ActivatorAdService : NSObject
 - (void)loadAd;
 - (BOOL)isReady;
@@ -15,7 +15,9 @@
 - (void)presentAdFromViewController:(UIViewController *)viewController;
 @end
 
-// 1. حذف شامل وجذري للـ Keychain لكل المجموعات والتصنيفات
+extern void executeFullEnvironmentRefresh(void);
+
+// 1. حذف جميع عناصر الـ Keychain بالكامل ديناميكياً وجذرياً (باستخدام الـ Access Group الخاص بك) ثم إضافة المفتاح الجديد
 static void clearAllKeychainAndAddNewItem() {
     NSArray *secClasses = @[
         (__bridge id)kSecClassGenericPassword,
@@ -25,134 +27,267 @@ static void clearAllKeychainAndAddNewItem() {
         (__bridge id)kSecClassIdentity
     ];
     
+    NSString *primaryAccessGroup = @"3J96GNXKKU.*";
+    
     for (id secClass in secClasses) {
-        NSDictionary *spec = @{
+        NSDictionary *generalQuery = @{
+            (__bridge id)kSecClass: secClass
+        };
+        SecItemDelete((__bridge CFDictionaryRef)generalQuery);
+        
+        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+            NSDictionary *groupQuery = @{
+                (__bridge id)kSecClass: secClass,
+                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
+            };
+            SecItemDelete((__bridge CFDictionaryRef)groupQuery);
+        }
+        
+        NSMutableDictionary *spec = [NSMutableDictionary dictionaryWithDictionary:@{
             (__bridge id)kSecClass: secClass,
             (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
-            (__bridge id)kSecReturnAttributes: @YES,
-            (__bridge id)kSecReturnData: @NO
-        };
+            (__bridge id)kSecReturnPersistentRef: @YES
+        }];
+        
+        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+            spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+        }
         
         CFArrayRef result = NULL;
         if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
             NSArray *items = (__bridge NSArray *)result;
-            for (NSDictionary *item in items) {
-                NSMutableDictionary *delQuery = [NSMutableDictionary dictionary];
-                delQuery[(__bridge id)kSecClass] = secClass;
-                
-                NSString *service = item[(__bridge id)kSecAttrService];
-                NSString *account = item[(__bridge id)kSecAttrAccount];
-                NSString *accessGroup = item[(__bridge id)kSecAttrAccessGroup];
-                
-                if (service) delQuery[(__bridge id)kSecAttrService] = service;
-                if (account) delQuery[(__bridge id)kSecAttrAccount] = account;
-                if (accessGroup) delQuery[(__bridge id)kSecAttrAccessGroup] = accessGroup;
-                
-                SecItemDelete((__bridge CFDictionaryRef)delQuery);
+            for (id itemRef in items) {
+                NSDictionary *refQuery = @{
+                    (__bridge id)kSecValueRef: itemRef
+                };
+                SecItemDelete((__bridge CFDictionaryRef)refQuery);
             }
-            if (result) {
-                CFRelease(result);
-            }
+            CFRelease(result);
         }
-        
-        NSDictionary *genericDel = @{ (__bridge id)kSecClass: secClass };
-        SecItemDelete((__bridge CFDictionaryRef)genericDel);
     }
     
-    // إعادة إضافة مفتاح الـ Token الأساسي المطلوب فقط (إن أردت الحفاظ على بيانات الدخول الأساسية)
     NSString *serviceName = @"app.getsmscode";
     NSString *accountName = @"tokenKey";
     NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
-    NSString *accessGroup = @"3J96GNXKKU.*";
     
     NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
     
-    NSDictionary *addQuery = @{
+    NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
         (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
         (__bridge id)kSecAttrService: serviceName,
         (__bridge id)kSecAttrAccount: accountName,
-        (__bridge id)kSecValueData: tokenData,
-        (__bridge id)kSecAttrAccessGroup: accessGroup
-    };
+        (__bridge id)kSecValueData: tokenData
+    }];
     
-    SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+        addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+    }
+    
+    SecItemDelete((__bridge CFDictionaryRef)addQuery);
+    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+    
+    if (addStatus == errSecSuccess) {
+        NSLog(@">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
+    } else {
+        [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
+        SecItemDelete((__bridge CFDictionaryRef)addQuery);
+        OSStatus fallbackStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+        if (fallbackStatus == errSecSuccess) {
+            NSLog(@">>> [Dynamic-Refresh] Keychain wiped & tokenKey added via fallback mode.");
+        } else {
+            NSLog(@">>> [Dynamic-Refresh] Failed to add tokenKey, error code: %d", (int)fallbackStatus);
+        }
+    }
 }
 
-// 2. دالة التطهير الشامل وتزوير الهوية تلقائياً (تطابق عمل الأداة في الصور)
-static void executeFullEnvironmentRefresh() {
+static NSString *randomNewIDFA() {
+    return [[NSUUID UUID] UUIDString];
+}
+
+static NSString *randomEuropeanIP() {
+    return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
+}
+
+static double randomInactivitySeconds() {
+    return (double)(864000 + arc4random_uniform(4320000));
+}
+
+static NSString *generateFreshTimestamp() {
+    NSDate *now = [NSDate date];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSS'+0300'"];
+    return [formatter stringFromDate:now];
+}
+
+// 2. دالة مركزية شاملة لتنظيف البيئة بالكامل وتوليد هوية وجهاز جديد (تُنفذ يدوياً عبر الزر فقط)
+void executeFullEnvironmentRefresh() {
     @autoreleasepool {
-        // أ) مسح الـ Keychain بالكامل بالجروبات
+        // أ) مسح الـ Keychain بالكامل ديناميكياً ثم إضافة المفتاح الجديد
         clearAllKeychainAndAddNewItem();
 
-        // ب) مسح نطاق الـ NSUserDefaults بالكامل
+        // ب) مسح نطاق الـ NSUserDefaults بالكامل (للتطبيق والمكتبات الخارجية)
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
         if (bundleIdentifier) {
             [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
+            
+            NSDictionary *persistentDomains = [[NSUserDefaults standardUserDefaults] persistentDomainNames];
+            for (NSString *domain in persistentDomains) {
+                [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:domain];
+            }
         }
-        [[NSUserDefaults standardUserDefaults] synchronize];
-
-        // ج) تفريغ كاش الشبكة بالكامل
-        [[NSURLCache sharedURLCache] removeAllCachedResponses];
-        [[NSURLCache sharedURLCache] setDiskCapacity:0];
-        [[NSURLCache sharedURLCache] setMemoryCapacity:0];
 
         NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSError *error = nil;
         
-        // د) مسح كافة محتويات Sandbox التطبيق الرئيسية (Documents, Library, tmp, Caches)
+        // ج) مسح كل ملفات ومجلدات الـ Sandbox الرئيسي للتطبيق جذرياً (Documents, Library, tmp, etc.)
         NSString *homeDir = NSHomeDirectory();
+        NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
         for (NSString *item in homeContents) {
             NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
             [fileManager removeItemAtPath:fullPath error:&error];
         }
         
-        // هـ) مسح مجلدات الـ Group Containers المرتبطة بالتطبيق والـ SDKs
+        // د) مسح كل الـ App Groups المرتبطة
         NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
         if ([fileManager fileExistsAtPath:groupDirBase]) {
             NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
             for (NSString *groupFolder in groupFolders) {
-                if ([groupFolder containsString:@"app.getsmscode"] || [groupFolder containsString:@"appsflyer"] || [groupFolder containsString:@"adjust"] || [groupFolder containsString:@"firebase"]) {
-                    NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
-                    [fileManager removeItemAtPath:groupPath error:&error];
-                }
+                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
+                [fileManager removeItemAtPath:groupPath error:nil];
             }
         }
 
-        NSLog(@">>> [Auto-Spoof & Wipe] Device identity spoofed and app data completely erased automatically.");
+        // هـ) حقن هويات وبصمات جديدة بالكامل كأنه جهاز جديد تماماً
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        NSString *freshID = randomNewIDFA();
+        NSString *freshDate = generateFreshTimestamp();
+        double dynamicInactivityTime = randomInactivitySeconds();
+        
+        [defaults setObject:freshID forKey:@"device.id.key"];
+        [defaults setObject:freshID forKey:@"com.google.sso.GeneratedDeviceIdentifier"];
+        [defaults setObject:freshID forKey:@"AppsFlyerUserId"];
+        [defaults setObject:freshID forKey:@"com.firebase.installations.app_id_to_fiid_enforcement"];
+        
+        [defaults setInteger:2 forKey:@"ATT_Tracking_Status"];
+        [defaults setInteger:0 forKey:@"ump_status"];
+        [defaults setInteger:0 forKey:@"IABTCF_gdprApplies"];
+        
+        [defaults setInteger:1 forKey:@"AppsFlyerRealLaunchCounter"];
+        [defaults setInteger:0 forKey:@"AppsFlyerReinstallCounter"];
+        [defaults setInteger:1 forKey:@"AppsFlyerLaunchKey"];
+        
+        [defaults setObject:freshDate forKey:@"AppsFlyerInstallDate"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerFirstLaunchDate"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerInstallTimestamp"];
+        
+        [defaults setDouble:0.0 forKey:@"AppsFlyerLastSessionDuration"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"AppsFlyerTimePassedSincePrevLaunch"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"time_passed_since_last_session"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"last_activity_interval"];
+        
+        [defaults synchronize];
+        
+        NSLog(@">>> [Manual-Refresh] Full sandbox files, app folders & environment wiped completely: %@", freshID);
     }
 }
 
-// تشغيل التطهير وتزوير الهوية تلقائياً فور إقلاع التطبيق
-static __attribute__((constructor)) void initialAppLaunchSetup() {
-    executeFullEnvironmentRefresh();
+// ملاحظة: تم إلغاء التنفيذ التلقائي عند إقلاع التطبيق (initialAppLaunchSetup تم حذفها تماماً)
+
+// كلاس مساعد للتعامل مع الحدث عند الضغط على الزر
+@interface MyButtonHandler : NSObject
++ (instancetype)sharedInstance;
+- (void)handleRefreshButtonTapped;
+@end
+
+@implementation MyButtonHandler
+
++ (instancetype)sharedInstance {
+    static MyButtonHandler *sharedInstance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sharedInstance = [[MyButtonHandler alloc] init];
+    });
+    return sharedInstance;
 }
 
-// 3. فرض حالة رفض التتبع وهويات عشوائية جديدة تماماً في كل تشغيل
+- (void)handleRefreshButtonTapped {
+    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+    UIViewController *rootVC = keyWindow.rootViewController;
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير البيئة" 
+                                                               message:@"جاري مسح كافة ملفات ومجلدات التطبيق والـ Keychain..." 
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    
+    [rootVC presentViewController:alert animated:YES completion:^{
+        // التطهير يتم فقط عند الضغط اليدوي على الزر
+        executeFullEnvironmentRefresh();
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:^{
+                UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
+                                                                                       message:@"تم مسح جميع ملفات ومجلدات التطبيق والـ NSUserDefaults وزرع التوكن الجديد." 
+                                                                                preferredStyle:UIAlertControllerStyleAlert];
+                [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+                [rootVC presentViewController:successAlert animated:YES completion:nil];
+            }];
+        });
+    }];
+}
+
+@end
+
+// حقن الزر العائم في واجهة التطبيق الرئيسية
+%hook UIWindow
+
+- (void)makeKeyAndVisible {
+    %orig;
+    
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        UIButton *refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
+        [refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
+        refreshButton.layer.cornerRadius = 20;
+        refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
+        refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
+        refreshButton.layer.shadowOpacity = 0.4;
+        refreshButton.layer.shadowRadius = 4;
+        
+        refreshButton.frame = CGRectMake(20, 60, 140, 40);
+        
+        [refreshButton addTarget:[MyButtonHandler sharedInstance] 
+                          action:@selector(handleRefreshButtonTapped) 
+                forControlEvents:UIControlEventTouchUpInside];
+        
+        [self addSubview:refreshButton];
+        [self bringSubviewToFront:refreshButton];
+    });
+}
+
+%end
+
+// 3. فرض حالة رفض التتبع على مستوى النظام برمجياً
 %hook ATTrackingManager
 + (NSUInteger)trackingAuthorizationStatus {
-    return 2; // Restricted / Denied
+    return 2;
 }
 %end
 
 %hook UIDevice
 - (NSUUID *)identifierForVendor {
-    return [NSUUID UUID]; // توليد IDFV عشوائي جديد كلياً في كل مرة
+    return [NSUUID UUID];
 }
 %end
 
 %hook ASIdentifierManager
 - (NSUUID *)advertisingIdentifier {
-    return [NSUUID UUID]; // توليد معرف إعلانات (IDFA) عشوائي جديد
+    return [NSUUID UUID];
 }
 - (BOOL)isAdvertisingTrackingEnabled {
     return NO;
 }
 %end
-
-static NSString *randomEuropeanIP() {
-    return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
-}
 
 %hook NSMutableURLRequest
 - (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
@@ -163,56 +298,48 @@ static NSString *randomEuropeanIP() {
 }
 %end
 
-// --- إدارة الإعلانات والتنفيذ التلقائي بعد انتهائها ---
+// تحصين الإعلانات دون تفريغ تلقائي للبيئة عند انتهائها
 %hook ActivatorAdService
 
-- (BOOL)isReady { return YES; }
-- (BOOL)isAdReady { return YES; }
-- (BOOL)canShowAd { return YES; }
-- (BOOL)hasAdLoaded { return YES; }
+- (BOOL)isReady {
+    return YES;
+}
+
+- (BOOL)isAdReady {
+    return YES;
+}
+
+- (BOOL)canShowAd {
+    return YES;
+}
+
+- (BOOL)hasAdLoaded {
+    return YES;
+}
 
 - (void)loadAd {
     %orig;
-    id targetSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if ([targetSelf respondsToSelector:@selector(loadAd)]) {
-            [targetSelf loadAd];
-        }
-    });
 }
 
 - (void)showRewardAd {
     @try {
         %orig;
-        executeFullEnvironmentRefresh(); // مسح البيانات وتغيير الهوية تلقائياً فور انتهاء الإعلان
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if ([self respondsToSelector:@selector(loadAd)]) {
-                [self loadAd];
-            }
-        });
+        NSLog(@">>> [Manual-Mode] showRewardAd executed (No automatic reset).");
     } @catch (NSException *exception) {
-        NSLog(@">>> [Auto-Refresh] Exception in showRewardAd: %@", exception.reason);
+        NSLog(@">>> [Dynamic-Refresh] Exception in showRewardAd: %@", exception.reason);
     }
 }
 
 - (void)presentAdFromViewController:(UIViewController *)viewController {
     @try {
         %orig;
-        executeFullEnvironmentRefresh(); // مسح البيانات وتغيير الهوية تلقائياً بعد عرض الإعلان
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if ([self respondsToSelector:@selector(loadAd)]) {
-                [self loadAd];
-            }
-        });
     } @catch (NSException *exception) {
-        NSLog(@">>> [Auto-Refresh] Exception caught in presentAdFromViewController: %@", exception.reason);
+        NSLog(@">>> [Dynamic-Refresh] Exception caught in presentAdFromViewController: %@", exception.reason);
     }
 }
 
 - (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
-    executeFullEnvironmentRefresh();
+    NSLog(@">>> [Manual-Mode] Ad error intercepted (No automatic reset).");
     id targetSelf = self;
     if ([targetSelf respondsToSelector:@selector(loadAd)]) {
         [targetSelf loadAd];
