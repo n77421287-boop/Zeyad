@@ -1,110 +1,26 @@
 // ============================================================================
-//  UltimateClassIntrospector.m — Deep Runtime Class Introspector
+//  SafeLocalInspector.m — Stable Tap Inspector (Zero Crashes)
 // ============================================================================
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-static UIView     *g_ultimateOverlay  = nil;
-static UITextView *g_ultimateTextView = nil;
+static UIView     *g_safeOverlay  = nil;
+static UITextView *g_safeTextView = nil;
 
-static void introspectClass(Class cls, UIView *view) {
-    if (!cls) return;
-    
-    NSMutableString *report = [NSMutableString string];
-    [report appendFormat:@"=== CLASS INTROSPECTION ===\n"];
-    [report appendFormat:@"Class: %@\n", NSStringFromClass(cls)];
-    [report appendFormat:@"Superclass: %@\n\n", NSStringFromClass([cls superclass])];
-    
-    // 1. استخراج الخصائص (Properties)
-    [report appendString:@"--- Properties ---\n"];
-    unsigned int propCount = 0;
-    objc_property_t *properties = class_copyPropertyList(cls, &propCount);
-    for (unsigned int i = 0; i < propCount; i++) {
-        objc_property_t prop = properties[i];
-        const char *propName = property_getName(prop);
-        const char *propAttr = property_getAttributes(prop);
-        [report appendFormat:@"• %s (%s)\n", propName, propAttr];
-    }
-    free(properties);
-    
-    // 2. استخراج الدوال (Methods)
-    [report appendString:@"\n--- Methods (Actions/Getters) ---\n"];
-    unsigned int methodCount = 0;
-    Method *methods = class_copyMethodList(cls, &methodCount);
-    for (unsigned int i = 0; i < methodCount; i++) {
-        Method method = methods[i];
-        SEL selector = method_getName(method);
-        [report appendFormat:@"• %s\n", sel_getName(selector)];
-    }
-    free(methods);
-    
-    // 3. النص أو العنوان الظاهر إن وجد
-    if ([view respondsToSelector:@selector(text)] && [(id)view text]) {
-        [report appendFormat:@"\n[Text Value]: %@\n", [(id)view text]];
-    } else if ([view respondsToSelector:@selector(title)] && [(id)view title]) {
-        [report appendFormat:@"\n[Title Value]: %@\n", [(id)view title]];
-    }
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (g_ultimateTextView) {
-            g_ultimateTextView.text = report;
-        }
-    });
-}
-
-// ============================================================================
-// SECTION — Intercepting Touches to Introspect Target Class
-// ============================================================================
-
-@interface UIWindow (ClassIntrospector)
+@interface SafeInspectorManager : NSObject
 @end
 
-@implementation UIWindow (ClassIntrospector)
-
-- (UIView *)intro_hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *hitView = [self intro_hitTest:point withEvent:event];
-    
-    if (hitView && ![[hitView description] containsString:@"UITextView"] && hitView != g_ultimateOverlay) {
-        if (event.type == UIEventTypeTouches) {
-            NSSet *touches = [event touchesForWindow:self];
-            for (UITouch *touch in touches) {
-                if (touch.phase == UITouchPhaseBegan) {
-                    introspectClass([hitView class], hitView);
-                }
-            }
-        }
-    }
-    
-    return hitView;
-}
-
-@end
-
-// ============================================================================
-// Setup Introspector Overlay Window
-// ============================================================================
-
-@interface ClassIntrospectorInstaller : NSObject
-@end
-
-@implementation ClassIntrospectorInstaller
+@implementation SafeInspectorManager
 
 + (void)load {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        Method m1 = class_getInstanceMethod([UIWindow class], @selector(hitTest:withEvent:));
-        Method m2 = class_getInstanceMethod([UIWindow class], @selector(intro_hitTest:withEvent:));
-        if (m1 && m2) method_exchangeImplementations(m1, m2);
-
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self setupOverlay];
-        });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self setupSafeInspector];
     });
 }
 
-+ (void)setupOverlay {
++ (void)setupSafeInspector {
     @try {
         UIWindow *keyWindow = nil;
         #pragma clang diagnostic push
@@ -117,26 +33,61 @@ static void introspectClass(Class cls, UIView *view) {
 
         CGRect b = keyWindow.bounds;
         
-        g_ultimateOverlay = [[UIView alloc] initWithFrame:CGRectMake(10, 40, b.size.width - 20, 280)];
-        g_ultimateOverlay.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.97];
-        g_ultimateOverlay.layer.cornerRadius = 10;
-        g_ultimateOverlay.layer.borderWidth = 1.5;
-        g_ultimateOverlay.layer.borderColor = [UIColor yellowColor].CGColor;
-        g_ultimateOverlay.userInteractionEnabled = YES;
-        g_ultimateOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        // نافذة عرض المعلومات في أعلى الشاشة بلون إطار أخضر آمن
+        g_safeOverlay = [[UIView alloc] initWithFrame:CGRectMake(10, 40, b.size.width - 20, 180)];
+        g_safeOverlay.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.96];
+        g_safeOverlay.layer.cornerRadius = 10;
+        g_safeOverlay.layer.borderWidth = 1.5;
+        g_safeOverlay.layer.borderColor = [UIColor systemGreenColor].CGColor;
+        g_safeOverlay.userInteractionEnabled = YES;
+        g_safeOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
-        g_ultimateTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, 5, g_ultimateOverlay.bounds.size.width - 10, g_ultimateOverlay.bounds.size.height - 10)];
-        g_ultimateTextView.backgroundColor = [UIColor clearColor];
-        g_ultimateTextView.textColor = [UIColor yellowColor];
-        g_ultimateTextView.font = [UIFont fontWithName:@"Courier-Bold" size:8.0] ?: [UIFont systemFontOfSize:8.0];
-        g_ultimateTextView.editable = NO;
-        g_ultimateTextView.text = @"[+] Deep Class Introspector Ready. Tap any button...\n";
-        g_ultimateTextView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        g_safeTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, 5, g_safeOverlay.bounds.size.width - 10, g_safeOverlay.bounds.size.height - 10)];
+        g_safeTextView.backgroundColor = [UIColor clearColor];
+        g_safeTextView.textColor = [UIColor systemGreenColor];
+        g_safeTextView.font = [UIFont fontWithName:@"Courier-Bold" size:9.0] ?: [UIFont systemFontOfSize:9.0];
+        g_safeTextView.editable = NO;
+        g_safeTextView.text = @"[+] Safe Inspector Ready. Tap anywhere on screen...\n";
+        g_safeTextView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
 
-        [g_ultimateOverlay addSubview:g_ultimateTextView];
-        [keyWindow addSubview:g_ultimateOverlay];
-        [keyWindow bringSubviewToFront:g_ultimateOverlay];
+        [g_safeOverlay addSubview:g_safeTextView];
+        [keyWindow addSubview:g_safeOverlay];
+        [keyWindow bringSubviewToFront:g_safeOverlay];
+
+        // إضافة تتبع لمس آمن تماماً لا يعطل التطبيق ولا يسبب كراش
+        UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleScreenTap:)];
+        tapGesture.cancelsTouchesInView = NO; // لكي يعمل التطبيق بشكل طبيعي تماماً
+        [keyWindow addGestureRecognizer:tapGesture];
+
+    } @catch (__unused NSException *e) {}
+}
+
++ (void)handleScreenTap:(UITapGestureRecognizer *)gesture {
+    @try {
+        CGPoint point = [gesture locationInView:gesture.view];
+        UIView *hitView = [gesture.view hitTest:point withEvent:nil];
         
+        if (!hitView || hitView == g_safeOverlay || [hitView isDescendantOfView:g_safeOverlay]) return;
+
+        NSString *className = NSStringFromClass([hitView class]);
+        NSString *superName = NSStringFromClass([[hitView superclass] class]);
+        
+        // استخراج النص أو العنوان إن وجد بشكل آمن
+        NSString *extraInfo = @"";
+        if ([hitView respondsToSelector:@selector(text)] && [(id)hitView text]) {
+            extraInfo = [NSString stringWithFormat:@"\n[Text]: '%@'", [(id)hitView text]];
+        } else if ([hitView respondsToSelector:@selector(title)] && [(id)hitView title]) {
+            extraInfo = [NSString stringWithFormat:@"\n[Title]: '%@'", [(id)hitView title]];
+        }
+
+        NSString *report = [NSString stringWithFormat:@"🎯 Tapped View Class: %@\n📌 Superclass: %@%@\n📍 Frame: %@", 
+                            className, superName, extraInfo, NSStringFromCGRect(hitView.frame)];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (g_safeTextView) {
+                g_safeTextView.text = report;
+            }
+        });
     } @catch (__unused NSException *e) {}
 }
 
