@@ -1,5 +1,5 @@
 // ============================================================================
-//  LocalActionSniffer.m — Local UI Actions & Methods Tracker
+//  LocalActionSniffer.m — Local UI Actions & Methods Tracker (Fixed)
 // ============================================================================
 
 #import <Foundation/Foundation.h>
@@ -15,7 +15,7 @@ static void local_log_action(NSString *actionDesc) {
     
     // إضافة الحدث الجديد في الأعلى
     [g_actionLogs insertObject:actionDesc atIndex:0];
-    if (g_actionLogs.count > 40) [_actionLogs removeLastObject];
+    if (g_actionLogs.count > 40) [g_actionLogs removeLastObject];
     
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!g_localOverlayText) return;
@@ -37,7 +37,6 @@ static void local_log_action(NSString *actionDesc) {
 @implementation UIControl (ActionSniffer)
 
 - (void)sniffer_sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
-    // استخراج اسم الزر، الكلاس المسؤول، والدالة التي سيتم تنفيذها عند الضغط
     NSString *targetClass = NSStringFromClass([target class]);
     NSString *senderClass = NSStringFromClass([self class]);
     NSString *actionSel = NSStringFromSelector(action);
@@ -53,7 +52,6 @@ static void local_log_action(NSString *actionDesc) {
     local_log_action(logMsg);
     NSLog(@"[LocalSniffer] %@", logMsg);
     
-    // تنفيذ الفعل الأصلي للزر لكي يستمر التطبيق بشكل طبيعي
     [self sniffer_sendAction:action to:target forEvent:event];
 }
 
@@ -72,7 +70,6 @@ static void local_log_action(NSString *actionDesc) {
     [self sniffer_viewDidAppear:animated];
     
     NSString *vcName = NSStringFromClass([self class]);
-    // تجاهل نوافذ النظام الداخلية لكي لا تملأ الشاشة
     if (![vcName hasPrefix:@"UI"] && ![vcName hasPrefix:@"_"]) {
         NSString *logMsg = [NSString stringWithFormat:@"[View Opened] ➔ UIViewController: %@", vcName];
         local_log_action(logMsg);
@@ -94,12 +91,12 @@ static void local_log_action(NSString *actionDesc) {
 + (void)load {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // 1. Swizzle UIControl sendAction (للأزرار والتفاعلات)
+        // 1. Swizzle UIControl sendAction
         Method m1 = class_getInstanceMethod([UIControl class], @selector(sendAction:to:forEvent:));
         Method m2 = class_getInstanceMethod([UIControl class], @selector(sniffer_sendAction:to:forEvent:));
         if (m1 && m2) method_exchangeImplementations(m1, m2);
 
-        // 2. Swizzle UIViewController viewDidAppear (لمعرفة أي صفحة/قائمة تفتحها)
+        // 2. Swizzle UIViewController viewDidAppear
         Method v1 = class_getInstanceMethod([UIViewController class], @selector(viewDidAppear:));
         Method v2 = class_getInstanceMethod([UIViewController class], @selector(sniffer_viewDidAppear:));
         if (v1 && v2) method_exchangeImplementations(v1, v2);
@@ -111,7 +108,7 @@ static void local_log_action(NSString *actionDesc) {
     });
 }
 
-+ + (void)setupOverlay {
++ (void)setupOverlay {
     @try {
         UIWindow *keyWindow = nil;
         if (@available(iOS 13.0, *)) {
