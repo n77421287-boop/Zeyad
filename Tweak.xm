@@ -17,7 +17,7 @@
 
 extern void executeFullEnvironmentRefresh(void);
 
-// 1. حذف جميع عناصر الـ Keychain بالكامل ديناميكياً وجذرياً (باستخدام الـ Access Group الخاص بك) ثم إضافة المفتاح الجديد
+// 1. حذف جميع عناصر الـ Keychain بالكامل ديناميكياً وجذرياً ثم إضافة التوكن الجديد
 static void clearAllKeychainAndAddNewItem() {
     NSArray *secClasses = @[
         (__bridge id)kSecClassGenericPassword,
@@ -119,19 +119,16 @@ static NSString *generateFreshTimestamp() {
     return [formatter stringFromDate:now];
 }
 
-// 2. دالة مركزية شاملة لتنظيف البيئة بالكامل وتوليد هوية وجهاز جديد
+// 2. دالة تنظيف شاملة وجذرية لكل ملفات ومجلدات و بيانات التطبيق بنسبة 100%
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
+        // مسح الـ Keychain
         clearAllKeychainAndAddNewItem();
 
-        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-        if (bundleIdentifier) {
-            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-        }
-
         NSFileManager *fileManager = [NSFileManager defaultManager];
-        
         NSString *homeDir = NSHomeDirectory();
+        
+        // أ) مسح محتويات الـ Sandbox الرئيسية قسرياً (Documents, Library, tmp, etc.)
         NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
         for (NSString *item in homeContents) {
@@ -139,6 +136,31 @@ void executeFullEnvironmentRefresh() {
             [fileManager removeItemAtPath:fullPath error:&error];
         }
         
+        // ب) مسح مجلد Library بالتفصيل الدقيق (Application Support, Caches, Preferences, Cookies) لضمان عدم بقاء أي بيانات مخفية
+        NSArray *subDirs = @[@"Documents", @"Library/Caches", @"Library/Application Support", @"Library/Preferences", @"Library/Cookies", @"tmp"];
+        for (NSString *subDir in subDirs) {
+            NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
+            if ([fileManager fileExistsAtPath:targetPath]) {
+                NSArray *contents = [fileManager contentsOfDirectoryAtPath:targetPath error:nil];
+                for (NSString *file in contents) {
+                    NSString *filePath = [targetPath stringByAppendingPathComponent:file];
+                    [fileManager removeItemAtPath:filePath error:nil];
+                }
+            }
+        }
+
+        // ج) مسح نطاق الـ NSUserDefaults بالكامل وتصفيره
+        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+        if (bundleIdentifier) {
+            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
+            // مسح أي دومينات إضافية قد تكون مسجلة
+            NSDictionary *persistentDomains = [[NSUserDefaults standardUserDefaults] persistentDomainNames];
+            for (NSString *domain in persistentDomains) {
+                [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:domain];
+            }
+        }
+        
+        // د) مسح الـ Group Containers المرتبطة بالتطبيق
         NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
         if ([fileManager fileExistsAtPath:groupDirBase]) {
             NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
@@ -148,6 +170,7 @@ void executeFullEnvironmentRefresh() {
             }
         }
 
+        // هـ) حقن هويات وبصمات جديدة بالكامل
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSString *freshID = randomNewIDFA();
         NSString *freshDate = generateFreshTimestamp();
@@ -177,7 +200,7 @@ void executeFullEnvironmentRefresh() {
         
         [defaults synchronize];
         
-        NSLog(@">>> [Manual-Refresh] Full sandbox files, app folders & environment wiped completely: %@", freshID);
+        NSLog(@">>> [Manual-Refresh] COMPLETE AND TOTAL WIPE OF ALL APP DATA & FILES SUCCESSFUL: %@", freshID);
     }
 }
 
@@ -194,27 +217,35 @@ void executeFullEnvironmentRefresh() {
 }
 @end
 
-@interface FloatingButtonManager : NSObject
-+ (instancetype)sharedInstance;
-- (void)showFloatingButton;
-@end
+static FloatingButtonWindow *sharedFloatingWindow = nil;
+static UIButton *sharedRefreshButton = nil;
 
-@implementation FloatingButtonManager {
-    FloatingButtonWindow *floatingWindow;
-}
-
-+ (instancetype)sharedInstance {
-    static FloatingButtonManager *sharedInstance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sharedInstance = [[FloatingButtonManager alloc] init];
+static void handleRefreshAction() {
+    if (!sharedFloatingWindow) return;
+    UIViewController *rootVC = sharedFloatingWindow.rootViewController;
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
+                                                               message:@"جاري مسح كافة ملفات، بيانات وداتا التطبيق من الجذور..." 
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    
+    [rootVC presentViewController:alert animated:YES completion:^{
+        executeFullEnvironmentRefresh();
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:^{
+                UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
+                                                                                       message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
+                                                                                preferredStyle:UIAlertControllerStyleAlert];
+                [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+                [rootVC presentViewController:successAlert animated:YES completion:nil];
+            }];
+        });
     });
-    return sharedInstance;
 }
 
-- (void)showFloatingButton {
+static void createAndShowFloatingButton() {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self->floatingWindow) return;
+        if (sharedFloatingWindow) return;
         
         UIWindowScene *targetScene = nil;
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -225,77 +256,55 @@ void executeFullEnvironmentRefresh() {
         }
         
         if (targetScene) {
-            self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
+            sharedFloatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
         } else {
-            self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+            sharedFloatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
         }
         
-        self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
-        self->floatingWindow.backgroundColor = [UIColor clearColor];
+        sharedFloatingWindow.windowLevel = UIWindowLevelAlert + 100;
+        sharedFloatingWindow.backgroundColor = [UIColor clearColor];
         
         UIViewController *emptyVC = [[UIViewController alloc] init];
         emptyVC.view.backgroundColor = [UIColor clearColor];
-        self->floatingWindow.rootViewController = emptyVC;
+        sharedFloatingWindow.rootViewController = emptyVC;
         
-        UIButton *refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        [refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
-        [refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
-        refreshButton.layer.cornerRadius = 20;
-        refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
-        refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
-        refreshButton.layer.shadowOpacity = 0.4;
-        refreshButton.layer.shadowRadius = 4;
+        sharedRefreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [sharedRefreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
+        [sharedRefreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        sharedRefreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
+        sharedRefreshButton.layer.cornerRadius = 20;
+        sharedRefreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
+        sharedRefreshButton.layer.shadowOffset = CGSizeMake(0, 2);
+        sharedRefreshButton.layer.shadowOpacity = 0.4;
+        sharedRefreshButton.layer.shadowRadius = 4;
         
-        // تم فصل حساب عرض الشاشة لتجنب أي أخطاء في المترجم
         CGRect screenBounds = [UIScreen mainScreen].bounds;
         CGFloat screenWidth = screenBounds.size.width;
-        refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
+        sharedRefreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
         
-        [refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
-        
-        self->floatingWindow.targetButton = refreshButton;
-        
-        [emptyVC.view addSubview:refreshButton];
-        [self->floatingWindow setHidden:NO];
+        sharedFloatingWindow.targetButton = sharedRefreshButton;
+        [emptyVC.view addSubview:sharedRefreshButton];
+        [sharedFloatingWindow setHidden:NO];
     });
 }
 
-- (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
-    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                           message:@"تم مسح جميع ملفات ومجلدات التطبيق والـ NSUserDefaults وزرع التوكن الجديد." 
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
-    [rootVC presentViewController:successAlert animated:YES completion:nil];
+@interface ButtonTargetHelper : NSObject
++ (void)buttonTapped;
+@end
+@implementation ButtonTargetHelper
++ (void)buttonTapped {
+    handleRefreshAction();
 }
-
-- (void)handleRefreshButtonTapped {
-    UIViewController *rootVC = self->floatingWindow.rootViewController;
-    
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير البيئة" 
-                                                               message:@"جاري مسح كافة ملفات ومجلدات التطبيق والـ Keychain..." 
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    
-    __weak typeof(self) weakSelf = self;
-    [rootVC presentViewController:alert animated:YES completion:^{
-        executeFullEnvironmentRefresh();
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                if (weakSelf) {
-                    [weakSelf showSuccessAlertFromRoot:rootVC];
-                }
-            }];
-        });
-    });
-}
-
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق
+static void addTargetToButton() {
+    [sharedRefreshButton addTarget:[ButtonTargetHelper class] action:@selector(buttonTapped) forControlEvents:UIControlEventTouchUpInside];
+}
+
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[FloatingButtonManager sharedInstance] showFloatingButton];
+        createAndShowFloatingButton();
+        addTargetToButton();
     });
 }
 
