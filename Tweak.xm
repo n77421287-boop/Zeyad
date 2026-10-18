@@ -209,7 +209,6 @@ void executeFullEnvironmentRefresh() {
 @interface FloatingButtonManager : NSObject
 + (instancetype)sharedInstance;
 - (void)showFloatingButton;
-- (void)showAlertAfterDelay:(UIAlertController *)alert rootVC:(UIViewController *)rootVC;
 @end
 
 @implementation FloatingButtonManager {
@@ -271,14 +270,12 @@ void executeFullEnvironmentRefresh() {
     [self->floatingWindow setHidden:NO];
 }
 
-- (void)showAlertAfterDelay:(UIAlertController *)alert rootVC:(UIViewController *)rootVC {
-    [alert dismissViewControllerAnimated:YES completion:^{
-        UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                               message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
-                                                                        preferredStyle:UIAlertControllerStyleAlert];
-        [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
-        [rootVC presentViewController:successAlert animated:YES completion:nil];
-    }];
+- (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
+    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
+                                                                           message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+    [rootVC presentViewController:successAlert animated:YES completion:nil];
 }
 
 - (void)handleRefreshButtonTapped {
@@ -288,15 +285,23 @@ void executeFullEnvironmentRefresh() {
                                                                message:@"جاري مسح كافة ملفات، بيانات وداتا التطبيق من الجذور..." 
                                                         preferredStyle:UIAlertControllerStyleAlert];
     
+    __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh();
-        [self performSelector:@selector(showAlertAfterDelay:rootVC:) withObject:alert withObject:rootVC afterDelay:1.0];
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:^{
+                if (weakSelf) {
+                    [weakSelf showSuccessAlertFromRoot:rootVC];
+                }
+            }];
+        });
     }];
 }
 
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق بالطريقة المتوافقة تماماً مع معالج Theos
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق بالطريقة المتوافقة تماماً
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
