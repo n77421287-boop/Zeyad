@@ -181,7 +181,7 @@ void executeFullEnvironmentRefresh() {
     }
 }
 
-// 3. نافذة مخصصة مستقلة للزر العائم لضمان بقائه فوق كل الصفحات وعدم تأثره بالتنقل
+// 3. نافذة مخصصة مستقلة للزر العائم
 @interface FloatingButtonWindow : UIWindow
 @end
 
@@ -277,7 +277,7 @@ void executeFullEnvironmentRefresh() {
 
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق (تم تصحيح الأقواس بدقة هنا)
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق
 static __attribute__((constructor)) void initializeFloatingButton() {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
