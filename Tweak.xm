@@ -100,11 +100,43 @@ static void clearAllKeychainAndAddNewItem() {
     }
 }
 
+static NSString *randomNewIDFA() {
+    return [[NSUUID UUID] UUIDString];
+}
+
+static NSString *randomNewUUIDString() {
+    return [[[NSUUID UUID] UUIDString] uppercaseString];
+}
+
+static NSString *randomAppsFlyerUserId() {
+    long long randomPrefix = 1790000000000 + arc4random_uniform(99999999);
+    int randomSuffix = arc4random_uniform(9000000) + 1000000;
+    return [NSString stringWithFormat:@"%lld-%d", randomPrefix, randomSuffix];
+}
+
 static NSString *randomEuropeanIP() {
     return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
 }
 
-// 2. دالة تنظيف جذرية تضمن حذف كل محتويات مجلد Library ومجلدات التطبيق بالكامل
+static double randomInactivitySeconds() {
+    return (double)(864000 + arc4random_uniform(4320000));
+}
+
+static NSString *generateFreshTimestamp() {
+    NSDate *now = [NSDate date];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSS'+0300'"];
+    return [formatter stringFromDate:now];
+}
+
+static NSString *generateAppsFlyerDateString() {
+    NSDate *now = [NSDate date];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"yyyy-MM-dd_HHmmss'+0300'"];
+    return [formatter stringFromDate:now];
+}
+
+// 2. دالة تنظيف شاملة وجذرية لكل ملفات ومجلدات و بيانات التطبيق بنسبة 100%
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
         clearAllKeychainAndAddNewItem();
@@ -113,19 +145,13 @@ void executeFullEnvironmentRefresh() {
         NSString *homeDir = NSHomeDirectory();
         
         NSError *error = nil;
-        
-        // استهداف مجلد Library مباشرة ومسح كافة محتوياته بدقة
-        NSString *libraryDir = [homeDir stringByAppendingPathComponent:@"Library"];
-        if ([fileManager fileExistsAtPath:libraryDir]) {
-            NSArray *libraryContents = [fileManager contentsOfDirectoryAtPath:libraryDir error:&error];
-            for (NSString *item in libraryContents) {
-                NSString *fullPath = [libraryDir stringByAppendingPathComponent:item];
-                [fileManager removeItemAtPath:fullPath error:&error];
-            }
+        NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
+        for (NSString *item in homeContents) {
+            NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
+            [fileManager removeItemAtPath:fullPath error:&error];
         }
         
-        // مسح باقي المجلدات الأساسية (Documents, tmp, وغيرها) لضمان نظافة التطبيق 100%
-        NSArray *subDirs = @[@"Documents", @"tmp"];
+        NSArray *subDirs = @[@"Documents", @"Library/Caches", @"Library/Application Support", @"Library/Preferences", @"Library/Cookies", @"tmp"];
         for (NSString *subDir in subDirs) {
             NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
             if ([fileManager fileExistsAtPath:targetPath]) {
@@ -137,7 +163,76 @@ void executeFullEnvironmentRefresh() {
             }
         }
 
-        NSLog(@">>> [Manual-Refresh] LIBRARY AND ALL APP FILES COMPLETELY WIPED.");
+        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+        if (bundleIdentifier) {
+            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
+        }
+        
+        NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
+        if ([fileManager fileExistsAtPath:groupDirBase]) {
+            NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
+            for (NSString *groupFolder in groupFolders) {
+                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
+                [fileManager removeItemAtPath:groupPath error:nil];
+            }
+        }
+
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        NSString *freshID = randomNewIDFA();
+        NSString *freshUUID = randomNewUUIDString();
+        NSString *freshAFUserId = randomAppsFlyerUserId();
+        NSString *freshDate = generateFreshTimestamp();
+        NSString *freshAFDate = generateAppsFlyerDateString();
+        double dynamicInactivityTime = randomInactivitySeconds();
+        
+        // ضبط المعرفات الأساسية (التي تتغير كلياً في كل ضغطة)
+        [defaults setObject:freshID forKey:@"device.id.key"];
+        [defaults setObject:freshID forKey:@"com.google.sso.GeneratedDeviceIdentifier"];
+        [defaults setObject:freshAFUserId forKey:@"AppsFlyerUserId"]; // <--- أصبح يتولد عشوائياً ومتجدداً
+        [defaults setObject:freshUUID forKey:@"igg-userId"];
+        [defaults setObject:freshUUID forKey:@"STASessionUUID"];
+        [defaults setObject:freshUUID forKey:@"STAStoredDeveloperUserId"];
+        
+        // ضبط حالات الموافقة وإعدادات StartApp و UMP
+        [defaults setInteger:2 forKey:@"ATT_Tracking_Status"];
+        [defaults setInteger:3 forKey:@"ump_status"];
+        [defaults setInteger:1 forKey:@"ump_pors"];
+        [defaults setInteger:4444 forKey:@"UMP_consentModeValues"];
+        [defaults setInteger:1 forKey:@"IABTCF_gdprApplies"];
+        [defaults setInteger:1 forKey:@"consent.gdpr.value"];
+        [defaults setInteger:0 forKey:@"consent.gdpr.explicit"];
+        [defaults setInteger:1 forKey:@"trackedKey"];
+        
+        // تفعيل أدوات StartApp
+        [defaults setInteger:1 forKey:@"STASKAAdNetworkEnabled"];
+        [defaults setInteger:1 forKey:@"STAWFScanEnabled"];
+        [defaults setInteger:1 forKey:@"STAOMSDKEnabled"];
+        [defaults setInteger:1 forKey:@"STANativeVideoEnabled"];
+        [defaults setInteger:1 forKey:@"STAStartAppBrowserEnabled"];
+        [defaults setInteger:1 forKey:@"STASKAAdImpressionsEnabled"];
+        [defaults setInteger:1 forKey:@"STASupportIABViewability"];
+        [defaults setInteger:1 forKey:@"STAAutoLoad"];
+        [defaults setInteger:1 forKey:@"STANativeVideoFullscreenAllowed"];
+        
+        // إعدادات AppsFlyer
+        [defaults setInteger:3 forKey:@"AppsFlyerRealLaunchCounter"];
+        [defaults setInteger:0 forKey:@"AppsFlyerReinstallCounter"];
+        [defaults setInteger:1 forKey:@"AppsFlyerLaunchKey"];
+        [defaults setInteger:5 forKey:@"AppsFlyerCounter"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerInstallDate"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerFirstLaunchDate"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerInstallTimestamp"];
+        [defaults setObject:freshAFDate forKey:@"AppsFlyerDate3"];
+        [defaults setObject:freshAFDate forKey:@"AppsFlyerInitDate"];
+        
+        [defaults setDouble:34.0 forKey:@"AppsFlyerLastSessionDuration"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"AppsFlyerTimePassedSincePrevLaunch"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"time_passed_since_last_session"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"last_activity_interval"];
+        
+        [defaults synchronize];
+        
+        NSLog(@">>> [Manual-Refresh] COMPLETE WIPE & DYNAMIC USERDEFAULTS RESTORE SUCCESSFUL: %@", freshID);
     }
 }
 
@@ -220,7 +315,7 @@ void executeFullEnvironmentRefresh() {
 
 - (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
     UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                           message:@"تم مسح مجلد Library ومحتويات التطبيق والـ Keychain وزرع التوكن الجديد بنجاح تام." 
+                                                                           message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
                                                                     preferredStyle:UIAlertControllerStyleAlert];
     
     [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
@@ -238,7 +333,7 @@ void executeFullEnvironmentRefresh() {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
     
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
-                                                               message:@"جاري مسح محتويات Library وملفات التطبيق بالكامل..." 
+                                                               message:@"جاري مسح كافة ملفات، بيانات وداتا التطبيق من الجذور..." 
                                                         preferredStyle:UIAlertControllerStyleAlert];
     
     __weak typeof(self) weakSelf = self;
