@@ -17,55 +17,28 @@
 
 extern void executeFullEnvironmentRefresh(void);
 
-// متغيرات في الذاكرة لحفظ المعرفات الوهمية والمتجددة لكل جلسة تشغيل (شاملة الـ IDFA و IDFV و FID)
-static NSString *runtimeFreshIDFV = nil;
-static NSString *runtimeFreshIDFA = nil;
-static NSString *runtimeFreshFID  = nil;
-
-// 1. دالة الحذف العميق الآمن المضاد للاسترجاع (تدمير الملفات والمجلدات المتداخلة)
-static void secureDeepCleanDirectoryContents(NSString *dirPath, NSFileManager *fileManager, BOOL removeRootFolder) {
-    if (![fileManager fileExistsAtPath:dirPath]) return;
-    
-    NSDirectoryEnumerator *enumerator = [fileManager enumeratorAtURL:[NSURL fileURLWithPath:dirPath]
-                                           includingPropertiesForKeys:@[NSURLIsDirectoryKey]
-                                                              options:0
-                                                         errorHandler:^BOOL(NSURL *url, NSError *error) {
-        return YES;
-    }];
-    
-    NSMutableArray *filesList = [NSMutableArray array];
-    NSMutableArray *foldersList = [NSMutableArray array];
-    
-    for (NSURL *url in enumerator) {
-        NSNumber *isDirectory = nil;
-        [url getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
-        if ([isDirectory boolValue]) {
-            [foldersList addObject:url.path];
-        } else {
-            [filesList addObject:url.path];
-        }
+static NSString *getPersistentIDFA() {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *savedIDFA = [defaults stringForKey:@"Persistent_Custom_IDFA"];
+    if (!savedIDFA) {
+        savedIDFA = [[NSUUID UUID] UUIDString];
+        [defaults setObject:savedIDFA forKey:@"Persistent_Custom_IDFA"];
+        [defaults synchronize];
     }
-    
-    // الكتابة فوق الملفات وتدمير محتواها لمنع الاسترجاع
-    for (NSString *filePath in filesList) {
-        @try {
-            [@"" writeToFile:filePath atomically:NO encoding:NSUTF8StringEncoding error:nil];
-        } @catch (NSException *e) {}
-        [fileManager removeItemAtPath:filePath error:nil];
-    }
-    
-    // حذف المجلدات الفرعية بتسلسل عكسي
-    NSArray *reversedFolders = [[foldersList reverseObjectEnumerator] allObjects];
-    for (NSString *folderPath in reversedFolders) {
-        [fileManager removeItemAtPath:folderPath error:nil];
-    }
-    
-    if (removeRootFolder) {
-        [fileManager removeItemAtPath:dirPath error:nil];
-    }
+    return savedIDFA;
 }
 
-// 2. دالة مسح وتطهير الـ Keychain وزرع التوكن الجديد
+static NSString *getPersistentIDFV() {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *savedIDFV = [defaults stringForKey:@"Persistent_Custom_IDFV"];
+    if (!savedIDFV) {
+        savedIDFV = [[NSUUID UUID] UUIDString];
+        [defaults setObject:savedIDFV forKey:@"Persistent_Custom_IDFV"];
+        [defaults synchronize];
+    }
+    return savedIDFV;
+}
+
 static void clearAllKeychainAndAddNewItem() {
     NSArray *secClasses = @[
         (__bridge id)kSecClassGenericPassword,
@@ -152,65 +125,112 @@ static NSString *randomEuropeanIP() {
     return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
 }
 
-// 3. التسلسل الهرمي الصارم للتنظيف الكامل مع توليد هوكات معرفات وهمية جديدة (شاملة الـ FID)
+static double randomInactivitySeconds() {
+    return (double)(864000 + arc4random_uniform(4320000));
+}
+
+static NSString *generateFreshTimestamp() {
+    NSDate *now = [NSDate date];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSS'+0300'"];
+    return [formatter stringFromDate:now];
+}
+
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
-        // توليد معرفات وهمية جديدة كلياً في الذاكرة (IDFA, IDFV, FID)
-        runtimeFreshIDFV = [[NSUUID UUID] UUIDString];
-        runtimeFreshIDFA = [[NSUUID UUID] UUIDString];
-        runtimeFreshFID  = [[[NSUUID UUID] UUIDString] lowercaseString]; // تنسيق خاص لمعرفات الفايربيز
-        
+        clearAllKeychainAndAddNewItem();
+
         NSFileManager *fileManager = [NSFileManager defaultManager];
         NSString *homeDir = NSHomeDirectory();
-        
-        // الخطوة الأولى: مسح إعدادات NSUserDefaults بالكامل
-        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-        if (bundleIdentifier) {
-            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-            [[NSUserDefaults standardUserDefaults] synchronize];
-        }
-        
-        // الخطوة الثانية: تنفيذ الحذف العميق للملفات والمجلدات في حاوية التطبيق
-        NSArray *targetDirs = @[
-            @"Documents",
-            @"Library/Caches",
-            @"Library/Application Support",
-            @"Library/Preferences",
-            @"Library/Cookies",
-            @"Library/Saved Application State",
-            @"tmp"
-        ];
-        
-        for (NSString *subDir in targetDirs) {
-            NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
-            secureDeepCleanDirectoryContents(targetPath, fileManager, NO);
-        }
         
         NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
         for (NSString *item in homeContents) {
             NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
-            secureDeepCleanDirectoryContents(fullPath, fileManager, YES);
+            [fileManager removeItemAtPath:fullPath error:&error];
         }
         
-        // الخطوة الثالثة: تطبيق الحذف العميق على الـ App Groups
+        NSArray *targetSubPaths = @[
+            @"Documents",
+            @"Library/Caches",
+            @"Library/Application Support",
+            @"Library/Preferences",
+            @"Library/Cookies",
+            @"Library/WebKit",
+            @"Library/Saved Application State",
+            @"Library/NetworkCache",
+            @"Library/Caches/Snapshots",
+            @"tmp"
+        ];
+        
+        for (NSString *subDir in targetSubPaths) {
+            NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
+            if ([fileManager fileExistsAtPath:targetPath]) {
+                NSArray *contents = [fileManager contentsOfDirectoryAtPath:targetPath error:nil];
+                for (NSString *file in contents) {
+                    NSString *filePath = [targetPath stringByAppendingPathComponent:file];
+                    [fileManager removeItemAtPath:filePath error:nil];
+                }
+            }
+        }
+
+        NSHTTPCookieStorage *cookieStorage = [NSHTTPCookieStorage sharedHTTPCookieStorage];
+        for (NSHTTPCookie *cookie in cookieStorage.cookies) {
+            [cookieStorage deleteCookie:cookie];
+        }
+        [[NSURLCache sharedURLCache] removeAllCachedResponses];
+
+        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+        if (bundleIdentifier) {
+            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
+        }
+        
         NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
         if ([fileManager fileExistsAtPath:groupDirBase]) {
             NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
             for (NSString *groupFolder in groupFolders) {
                 NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
-                secureDeepCleanDirectoryContents(groupPath, fileManager, YES);
+                [fileManager removeItemAtPath:groupPath error:nil];
             }
         }
 
-        // الخطوة الرابعة والأخيرة: مسح الـ Keychain وزرع التوكن الجديد
-        clearAllKeychainAndAddNewItem();
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         
-        NSLog(@">>> [Manual-Refresh] RUNTIME FAKE IDFA: %@ | IDFV: %@ | FID: %@ GENERATED.", runtimeFreshIDFA, runtimeFreshIDFV, runtimeFreshFID);
+        [defaults removeObjectForKey:@"Persistent_Custom_IDFA"];
+        [defaults removeObjectForKey:@"Persistent_Custom_IDFV"];
+        
+        NSString *freshID = getPersistentIDFA();
+        NSString *freshDate = generateFreshTimestamp();
+        double dynamicInactivityTime = randomInactivitySeconds();
+        
+        [defaults setObject:freshID forKey:@"device.id.key"];
+        [defaults setObject:freshID forKey:@"com.google.sso.GeneratedDeviceIdentifier"];
+        [defaults setObject:freshID forKey:@"AppsFlyerUserId"];
+        [defaults setObject:freshID forKey:@"com.firebase.installations.app_id_to_fiid_enforcement"];
+        
+        [defaults setInteger:3 forKey:@"ATT_Tracking_Status"];
+        [defaults setInteger:1 forKey:@"ump_status"];
+        [defaults setInteger:1 forKey:@"IABTCF_gdprApplies"];
+        
+        [defaults setInteger:1 forKey:@"AppsFlyerRealLaunchCounter"];
+        [defaults setInteger:0 forKey:@"AppsFlyerReinstallCounter"];
+        [defaults setInteger:1 forKey:@"AppsFlyerLaunchKey"];
+        
+        [defaults setObject:freshDate forKey:@"AppsFlyerInstallDate"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerFirstLaunchDate"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerInstallTimestamp"];
+        
+        [defaults setDouble:0.0 forKey:@"AppsFlyerLastSessionDuration"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"AppsFlyerTimePassedSincePrevLaunch"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"time_passed_since_last_session"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"last_activity_interval"];
+        
+        [defaults synchronize];
+        
+        NSLog(@">>> [Manual-Refresh] COMPLETE WIPE OF WEBKIT, NETWORK, CACHES & APP DATA SUCCESSFUL: %@", freshID);
     }
 }
 
-// 4. نافذة مخصصة للزر العائم
 @interface FloatingButtonWindow : UIWindow
 @property (nonatomic, strong) UIButton *targetButton;
 @end
@@ -267,7 +287,7 @@ void executeFullEnvironmentRefresh() {
     self->floatingWindow.rootViewController = emptyVC;
     
     self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self->refreshButton setTitle:@"🔄 تطهير وتزوير الهويات (FID)" forState:UIControlStateNormal];
+    [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
     [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
     self->refreshButton.layer.cornerRadius = 20;
@@ -278,7 +298,7 @@ void executeFullEnvironmentRefresh() {
     
     CGRect screenBounds = [UIScreen mainScreen].bounds;
     CGFloat screenWidth = screenBounds.size.width;
-    self->refreshButton.frame = CGRectMake(screenWidth - 195, 60, 185, 40);
+    self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
     
     [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
     
@@ -288,8 +308,8 @@ void executeFullEnvironmentRefresh() {
 }
 
 - (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
-    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم التطهير بنجاح" 
-                                                                           message:@"تم مسح البيانات وتوليد معرفات وهمية جديدة (IDFA, IDFV, FID) للجلسة القادمة." 
+    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
+                                                                           message:@"تم مسح كل داتا، WebKit، ملفات الشبكة، الكاش والبيانات من الجذور بنجاح تام." 
                                                                     preferredStyle:UIAlertControllerStyleAlert];
     
     [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
@@ -306,8 +326,8 @@ void executeFullEnvironmentRefresh() {
 - (void)handleRefreshButtonTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
     
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتوليد هويات وهمية" 
-                                                               message:@"جاري مسح كل الملفات وتوليد معرفات وهمية جديدة (شاملة الـ FID)..." 
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
+                                                               message:@"جاري مسح كافة ملفات WebKit، الكاش، الشبكة والداتا من الجذور..." 
                                                         preferredStyle:UIAlertControllerStyleAlert];
     
     __weak typeof(self) weakSelf = self;
@@ -326,49 +346,39 @@ void executeFullEnvironmentRefresh() {
 
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
     });
 }
 
-// هوكات تزويد التطبيق بالمعرفات الوهمية مباشرة دون حفظها
+// السماح بالتتبع وإرجاع الحالة 3 دائماً
 %hook ATTrackingManager
 + (NSUInteger)trackingAuthorizationStatus {
-    return 2;
+    return 3;
+}
+
++ (void)requestTrackingAuthorizationWithCompletionHandler:(void(^)(NSUInteger status))completion {
+    if (completion) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(3);
+        });
+    }
 }
 %end
 
 %hook UIDevice
 - (NSUUID *)identifierForVendor {
-    if (runtimeFreshIDFV) {
-        return [[NSUUID alloc] initWithUUIDString:runtimeFreshIDFV];
-    }
-    return %orig;
+    return [[NSUUID alloc] initWithUUIDString:getPersistentIDFV()];
 }
 %end
 
 %hook ASIdentifierManager
 - (NSUUID *)advertisingIdentifier {
-    if (runtimeFreshIDFA) {
-        return [[NSUUID alloc] initWithUUIDString:runtimeFreshIDFA];
-    }
-    return %orig;
+    return [[NSUUID alloc] initWithUUIDString:getPersistentIDFA()];
 }
 - (BOOL)isAdvertisingTrackingEnabled {
-    return NO;
-}
-%end
-
-// هوك اعتراض ومعالجة معرفات الـ Firebase Installations (FID) في حال استخدام التطبيق لها
-%hook FIRInstallations
-- (void)installationIDWithCompletion:(void (^)(NSString * _Nullable, NSError * _Nullable))completion {
-    if (runtimeFreshFID && completion) {
-        completion(runtimeFreshFID, nil);
-        return;
-    }
-    %orig;
+    return YES;
 }
 %end
 
