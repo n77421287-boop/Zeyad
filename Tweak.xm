@@ -3,39 +3,29 @@
 #include <mach/mach_time.h>
 
 // ==========================================
-// 1. تعريف واجهات نظام IOHIDEvent (نظام iGameGod الحقيقي)
+// 1. تعريف واجهات أبل الداخلية لإنشاء اللمسات المباشرة
 // ==========================================
-typedef struct __IOHIDEvent *IOHIDEventRef;
-typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
+@interface UITouch (Private)
+- (void)setPhase:(UITouchPhase)phase;
+- (void)setLocationInWindow:(CGPoint)location;
+- (void)setTimestamp:(NSTimeInterval)timestamp;
+- (void)setWindow:(UIWindow *)window;
+- (void)setView:(UIView *)view;
+- (void)setIsTap:(BOOL)isTap;
+- (void)setTapCount:(NSUInteger)tapCount;
+@end
 
-extern "C" {
-    IOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
-    void IOHIDEventSystemClientDispatchEvent(IOHIDEventSystemClientRef client, IOHIDEventRef event);
-    
-    IOHIDEventRef IOHIDEventCreateDigitizerFingerEvent(
-        CFAllocatorRef allocator,
-        uint64_t timestamp,
-        uint32_t fingerID,
-        uint32_t phase,
-        CGFloat x, CGFloat y, CGFloat z,
-        CGFloat pressure, CGFloat twist,
-        boolean_t range, boolean_t touch,
-        uint32_t flags
-    );
-}
+@interface UIEvent (Private)
+- (void)_addTouch:(UITouch *)touch forFocusedForcedPanGestureRecognizer:(id)recognizer;
+- (void)_clearTouches;
+@end
 
-typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
-    kIOHIDDigitizerEventPhaseUndefined = 0,
-    kIOHIDDigitizerEventPhaseRanges    = 1,
-    kIOHIDDigitizerEventPhaseTouch     = 2,
-    kIOHIDDigitizerEventPhaseStationary= 4,
-    kIOHIDDigitizerEventPhaseDown      = 5,
-    kIOHIDDigitizerEventPhaseUp        = 6,
-    kIOHIDDigitizerEventPhaseCancel    = 7
-};
+@interface UIApplication (Private)
+- (UIEvent *)_touchesEvent;
+@end
 
 // ==========================================
-// 2. بنية تخزين الحركات المسجلة
+// 2. بنية البيانات للحدث المسجل
 // ==========================================
 @interface RecordedEvent : NSObject <NSCoding>
 @property (nonatomic, assign) CGPoint point;
@@ -61,7 +51,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 @end
 
 // ==========================================
-// 3. إدارة التسجيل والتشغيل والواجهة العائمة
+// 3. إدارة التسجيل والتشغيل والتفاعل الحقيقي
 // ==========================================
 @interface MacroManager : NSObject
 @property (nonatomic, strong) UIWindow *floatingWindow;
@@ -80,7 +70,6 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 @property (nonatomic, strong) NSMutableArray<RecordedEvent *> *recordedEvents;
 @property (nonatomic, assign) NSTimeInterval lastEventTimestamp;
 @property (nonatomic, strong) dispatch_queue_t macroQueue;
-@property (nonatomic, assign) IOHIDEventSystemClientRef hidClient;
 
 + (instancetype)sharedInstance;
 - (void)setupUI;
@@ -109,8 +98,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     self = [super init];
     if (self) {
         _recordedEvents = [NSMutableArray array];
-        _macroQueue = dispatch_queue_create("com.igamegod.clone.queue", DISPATCH_QUEUE_SERIAL);
-        _hidClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+        _macroQueue = dispatch_queue_create("com.macro.engine.queue", DISPATCH_QUEUE_SERIAL);
         [self loadDataFromFile];
     }
     return self;
@@ -197,7 +185,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     });
 }
 
-// التنبيهات العائمة المؤقتة (تختفي بعد ثانيتين)
+// التنبيهات العائمة المؤقتة
 - (void)showToast:(NSString *)message {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.toastWindow) {
@@ -440,34 +428,40 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 }
 
 // ==========================================
-// 4. محرك حقن اللمس الآمن والمستقر (IOHIDEvent)
+// 4. محرك حقن اللمس الفعلي والمتفاعل مع الشاشة (نظام iGameGod الحقيقي)
 // ==========================================
-- (void)injectTouchAtPoint:(CGPoint)point phase:(IOHIDDigitizerEventPhase)phase {
-    if (!_hidClient) return;
-    
-    if (phase == kIOHIDDigitizerEventPhaseDown) {
+- (void)injectTouchAtPoint:(CGPoint)point phase:(UITouchPhase)phase {
+    UIWindow *keyWindow = nil;
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.isKeyWindow && ![w isEqual:self.floatingWindow]) {
+            keyWindow = w;
+            break;
+        }
+    }
+    if (!keyWindow) keyWindow = [[UIApplication sharedApplication].windows firstObject];
+    if (!keyWindow) return;
+
+    if (phase == UITouchPhaseBegan) {
         [self showTouchIndicatorAtPoint:point];
     }
-    
-    uint64_t machTime = mach_absolute_time();
-    IOHIDEventRef event = IOHIDEventCreateDigitizerFingerEvent(
-        kCFAllocatorDefault,
-        machTime,
-        1,          // Finger ID
-        phase,      // Phase (Down, Touch, Up)
-        point.x,
-        point.y,
-        0,          // Z
-        1.0,        // Pressure
-        0,          // Twist
-        true,       // Range
-        true,       // Touch
-        0           // Flags
-    );
-    
+
+    UIView *hitView = [keyWindow hitTest:point withEvent:nil];
+    if (!hitView) hitView = keyWindow;
+
+    UITouch *touch = [[UITouch alloc] init];
+    [touch setWindow:keyWindow];
+    [touch setView:hitView];
+    [touch setTapCount:1];
+    [touch setIsTap:YES];
+    [touch setTimestamp:CACurrentMediaTime()];
+    [touch setLocationInWindow:point];
+    [touch setPhase:phase];
+
+    UIEvent *event = [[UIApplication sharedApplication] _touchesEvent];
     if (event) {
-        IOHIDEventSystemClientDispatchEvent(_hidClient, event);
-        CFRelease(event);
+        [event _clearTouches];
+        [event _addTouch:touch forFocusedForcedPanGestureRecognizer:nil];
+        [[UIApplication sharedApplication] sendEvent:event];
     }
 }
 
@@ -489,13 +483,14 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
                 
                 if (!self.isPlaying) break;
                 
-                IOHIDDigitizerEventPhase hidPhase = kIOHIDDigitizerEventPhaseTouch;
-                if (ev.phase == 0) hidPhase = kIOHIDDigitizerEventPhaseDown;
-                else if (ev.phase == 1) hidPhase = kIOHIDDigitizerEventPhaseTouch;
-                else if (ev.phase == 2) hidPhase = kIOHIDDigitizerEventPhaseUp;
+                // تحويل مراحل التسجيل إلى مراحل UITouchPhase الحقيقية للضغط
+                UITouchPhase touchPhase = UITouchPhaseMoved;
+                if (ev.phase == 0) touchPhase = UITouchPhaseBegan;
+                else if (ev.phase == 1) touchPhase = UITouchPhaseMoved;
+                else if (ev.phase == 2) touchPhase = UITouchPhaseEnded;
                 
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [self injectTouchAtPoint:ev.point phase:hidPhase];
+                    [self injectTouchAtPoint:ev.point phase:touchPhase];
                 });
             }
             usleep(20000);
