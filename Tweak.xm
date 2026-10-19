@@ -1,43 +1,12 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
-#include <mach/mach_time.h>
 
 // ==========================================
-// 1. هيكل المحاكاة الحقيقي لأداة iGameGod
-// ==========================================
-@interface PTTouch : NSObject
-@property (nonatomic, assign) CGPoint point;
-@property (nonatomic, assign) UITouchPhase phase;
-@end
-
-@implementation PTTouch
-@end
-
-@interface UITouch (iGameGodEngine)
-- (void)setPhase:(UITouchPhase)phase;
-- (void)setLocationInWindow:(CGPoint)location;
-- (void)setTimestamp:(NSTimeInterval)timestamp;
-- (void)setWindow:(UIWindow *)window;
-- (void)setView:(UIView *)view;
-- (void)setIsTap:(BOOL)isTap;
-- (void)setTapCount:(NSUInteger)tapCount;
-@end
-
-@interface UIEvent (iGameGodEngine)
-- (void)_addTouch:(UITouch *)touch forFocusedForcedPanGestureRecognizer:(id)recognizer;
-- (void)_clearTouches;
-@end
-
-@interface UIApplication (iGameGodEngine)
-- (UIEvent *)_touchesEvent;
-@end
-
-// ==========================================
-// 2. بنية البيانات للحدث المسجل
+// 1. بنية البيانات للحدث المسجل
 // ==========================================
 @interface RecordedEvent : NSObject <NSCoding>
 @property (nonatomic, assign) CGPoint point;
-@property (nonatomic, assign) NSInteger phase;
+@property (nonatomic, assign) NSInteger phase; // 0: Began, 1: Moved, 2: Ended
 @property (nonatomic, assign) NSTimeInterval timeOffset;
 @end
 
@@ -59,7 +28,7 @@
 @end
 
 // ==========================================
-// 3. إدارة الماكرو واللمس المتطورة
+// 2. إدارة الماكرو والتشغيل الآمن 100%
 // ==========================================
 @interface MacroManager : NSObject
 @property (nonatomic, strong) UIWindow *floatingWindow;
@@ -106,7 +75,7 @@
     self = [super init];
     if (self) {
         _recordedEvents = [NSMutableArray array];
-        _macroQueue = dispatch_queue_create("com.igamegod.safe.queue", DISPATCH_QUEUE_SERIAL);
+        _macroQueue = dispatch_queue_create("com.autoclicker.safe.queue", DISPATCH_QUEUE_SERIAL);
         [self loadDataFromFile];
     }
     return self;
@@ -153,7 +122,7 @@
     [[NSFileManager defaultManager] removeItemAtPath:[self filePath] error:nil];
 }
 
-// رسم الدائرة الحمراء البصرية للتأكيد
+// مؤشر دائري أحمر بصري
 - (void)showTouchIndicatorAtPoint:(CGPoint)point {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindowScene *targetScene = nil;
@@ -193,7 +162,7 @@
     });
 }
 
-// التنبيهات العائمة
+// تنبيهات عائمة
 - (void)showToast:(NSString *)message {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.toastWindow) {
@@ -246,7 +215,7 @@
     }
 }
 
-// تصميم الواجهة العائمة
+// الواجهة العائمة
 - (void)setupUI {
     if (self.floatingWindow) return;
     
@@ -290,9 +259,9 @@
         dragBar.userInteractionEnabled = YES;
         
         UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, windowWidth - 20, 30)];
-        titleLabel.text = @"≡ اسحب هنا لتحريك النافذة";
-        titleLabel.textColor = [UIColor lightGrayColor];
-        titleLabel.font = [UIFont systemFontOfSize:11];
+        titleLabel.text = @"≡ Simple Auto Clicker";
+        titleLabel.textColor = [UIColor cyanColor];
+        titleLabel.font = [UIFont boldSystemFontOfSize:11];
         titleLabel.textAlignment = NSTextAlignmentCenter;
         [dragBar addSubview:titleLabel];
         
@@ -370,31 +339,31 @@
 
 - (void)recordTapped:(id)sender { 
     [self startRecording];
-    [self showToast:@"🔴 الحالة: بدأ تسجيل اللمسات..."];
+    [self showToast:@"🔴 بدء تسجيل النقرات..."];
 }
 
 - (void)stopTapped:(id)sender { 
     [self stopAll];
-    [self showToast:@"⏹️ الحالة: تم إيقاف التسجيل والتشغيل"];
+    [self showToast:@"⏹️ تم إيقاف التسجيل والتشغيل"];
 }
 
 - (void)playTapped:(id)sender { 
     if (self.recordedEvents.count == 0) {
-        [self showToast:@"⚠️ تنبيه: لا توجد حركات مسجلة للتشغيل!"];
+        [self showToast:@"⚠️ لا توجد حركات مسجلة للتشغيل!"];
         return;
     }
     [self startPlaybackLoop];
-    [self showToast:@"▶️ الحالة: بدأ التشغيل وتكرار اللمسات"];
+    [self showToast:@"▶️ بدء التشغيل والتفاعل مع الشاشة"];
 }
 
 - (void)saveTapped:(id)sender { 
     [self saveMacroAndSettings];
-    [self showToast:@"💾 الحالة: تم حفظ الحركات بنجاح"];
+    [self showToast:@"💾 تم حفظ الحركات بنجاح"];
 }
 
 - (void)clearTapped:(id)sender { 
     [self clearMacro];
-    [self showToast:@"🗑️ الحالة: تم مسح وحذف التسجيلات"];
+    [self showToast:@"🗑️ تم مسح وحذف التسجيلات"];
 }
 
 - (void)autoSwitchChanged:(UISwitch *)sender {
@@ -436,9 +405,9 @@
 }
 
 // ==========================================
-// 4. محرك حقن اللمس الآمن والمضمون (مع تعطيل تحذير الذاكرة)
+// 3. محرك التنفيذ الآمن المستوحى من مشاريع السورس المفتوح (بدون كراش)
 // ==========================================
-- (void)injectTouchAtPoint:(CGPoint)point phase:(UITouchPhase)phase {
+- (void)executeTouchAtPoint:(CGPoint)point phase:(NSInteger)phase {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *keyWindow = nil;
         for (UIWindow *w in [UIApplication sharedApplication].windows) {
@@ -450,53 +419,29 @@
         if (!keyWindow) keyWindow = [[UIApplication sharedApplication].windows firstObject];
         if (!keyWindow) return;
 
-        if (phase == UITouchPhaseBegan) {
+        if (phase == 0) {
             [self showTouchIndicatorAtPoint:point];
         }
 
+        // إيجاد العنصر الواقع تحت النقطة وتفعيل الضغطة عليه بشكل نظيف ومستقر
         UIView *hitView = [keyWindow hitTest:point withEvent:nil];
-        if (!hitView) hitView = keyWindow;
-
-        UITouch *touch = [[UITouch alloc] init];
-        [touch setWindow:keyWindow];
-        [touch setView:hitView];
-        [touch setTapCount:1];
-        [touch setIsTap:YES];
-        [touch setTimestamp:CACurrentMediaTime()];
-        [touch setLocationInWindow:point];
-        [touch setPhase:phase];
-
-        @try {
-            SEL touchesSel = NSSelectorFromString(@"_touchesEvent");
-            if ([[UIApplication sharedApplication] respondsToSelector:touchesSel]) {
-                
-                #pragma clang diagnostic push
-                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                UIEvent *event = [[UIApplication sharedApplication] performSelector:touchesSel];
-                #pragma clang diagnostic pop
-                
-                if (event) {
-                    SEL clearSel = NSSelectorFromString(@"_clearTouches");
-                    SEL addSel = NSSelectorFromString(@"_addTouch:forFocusedForcedPanGestureRecognizer:");
-                    
-                    if ([event respondsToSelector:clearSel]) {
-                        #pragma clang diagnostic push
-                        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                        [event performSelector:clearSel];
-                        #pragma clang diagnostic pop
+        if (hitView) {
+            @try {
+                if ([hitView isKindOfClass:[UIButton class]]) {
+                    [(UIButton *)hitView sendActionsForControlEvents:UIControlEventTouchUpInside];
+                } else if ([hitView isKindOfClass:[UIControl class]]) {
+                    [(UIControl *)hitView sendActionsForControlEvents:UIControlEventTouchUpInside];
+                } else {
+                    // محاكاة إيماءة الضغط على العناصر غير الزرية بأمان
+                    for (UIGestureRecognizer *recognizer in hitView.gestureRecognizers) {
+                        if ([recognizer isKindOfClass:[UITapGestureRecognizer class]]) {
+                            [recognizer.target performSelector:recognizer.action withObject:recognizer afterDelay:0.0];
+                        }
                     }
-                    
-                    if ([event respondsToSelector:addSel]) {
-                        IMP imp = [event methodForSelector:addSel];
-                        void (*func)(id, SEL, id, id) = (void (*)(id, SEL, id, id))imp;
-                        func(event, addSel, touch, nil);
-                    }
-                    
-                    [[UIApplication sharedApplication] sendEvent:event];
                 }
+            } @catch (NSException *exception) {
+                // صمام أمان يمنع الانهيار نهائياً
             }
-        } @catch (NSException *exception) {
-            // صمام أمان لمنع أي كراش نهائياً
         }
     });
 }
@@ -519,12 +464,7 @@
                 
                 if (!self.isPlaying) break;
                 
-                UITouchPhase touchPhase = UITouchPhaseMoved;
-                if (ev.phase == 0) touchPhase = UITouchPhaseBegan;
-                else if (ev.phase == 1) touchPhase = UITouchPhaseMoved;
-                else if (ev.phase == 2) touchPhase = UITouchPhaseEnded;
-                
-                [self injectTouchAtPoint:ev.point phase:touchPhase];
+                [self executeTouchAtPoint:ev.point phase:ev.phase];
             }
             usleep(20000);
         }
@@ -534,7 +474,7 @@
 @end
 
 // ==========================================
-// 5. الخطافات الأساسية (Hooks)
+// 4. الخطافات (Hooks) الأساسية للنافذة والتطبيق
 // ==========================================
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
