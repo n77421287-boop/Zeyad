@@ -436,10 +436,9 @@
 }
 
 // ==========================================
-// 4. محرك حقن اللمس الآمن والمضمون (طريقة iGameGod المحمية)
+// 4. محرك حقن اللمس الآمن والمضمون (مع تعطيل تحذير الذاكرة)
 // ==========================================
 - (void)injectTouchAtPoint:(CGPoint)point phase:(UITouchPhase)phase {
-    // الضمان الأساسي لمنع الكراش: التنفيذ الآمن الفوري على Main Queue
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindow *keyWindow = nil;
         for (UIWindow *w in [UIApplication sharedApplication].windows) {
@@ -458,7 +457,6 @@
         UIView *hitView = [keyWindow hitTest:point withEvent:nil];
         if (!hitView) hitView = keyWindow;
 
-        // بناء كائن اللمس بالكامل
         UITouch *touch = [[UITouch alloc] init];
         [touch setWindow:keyWindow];
         [touch setView:hitView];
@@ -468,11 +466,15 @@
         [touch setLocationInWindow:point];
         [touch setPhase:phase];
 
-        // حماية الاستدعاء لتجنب الكراش مع الأنظمة الحديثة
         @try {
             SEL touchesSel = NSSelectorFromString(@"_touchesEvent");
             if ([[UIApplication sharedApplication] respondsToSelector:touchesSel]) {
+                
+                #pragma clang diagnostic push
+                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
                 UIEvent *event = [[UIApplication sharedApplication] performSelector:touchesSel];
+                #pragma clang diagnostic pop
+                
                 if (event) {
                     SEL clearSel = NSSelectorFromString(@"_clearTouches");
                     SEL addSel = NSSelectorFromString(@"_addTouch:forFocusedForcedPanGestureRecognizer:");
@@ -494,7 +496,7 @@
                 }
             }
         } @catch (NSException *exception) {
-            // صمام الأمان المباشر: أي خطأ يتجاهله الكود بدلاً من إغلاق التطبيق (Crash Free)
+            // صمام أمان لمنع أي كراش نهائياً
         }
     });
 }
