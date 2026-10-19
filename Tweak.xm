@@ -106,31 +106,31 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
         _macroQueue = dispatch_queue_create("com.macro.engine.queue", DISPATCH_QUEUE_SERIAL);
         _hidClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
         
-        // قراءة الإعدادات والتسجيل من الملفات حصرياً
         [self loadDataFromFile];
     }
     return self;
 }
 
-// مسار ملف الحفظ الموحد في مجلد المستندات
 - (NSString *)filePath {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     NSString *documentsDirectory = [paths objectAtIndex:0];
     return [documentsDirectory stringByAppendingPathComponent:@"automacro_config.plist"];
 }
 
-// حفظ الأحداث وحالة التشغيل التلقائي معاً في ملف واحد
 - (void)saveMacroAndSettings {
     NSMutableDictionary *dict = [NSMutableDictionary dictionary];
     
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     NSData *eventsData = [NSKeyedArchiver archivedDataWithRootObject:_recordedEvents];
+#pragma clang diagnostic pop
+
     [dict setObject:eventsData forKey:@"events"];
     [dict setObject:@(_persistentAutoStart) forKey:@"autoStart"];
     
     [dict writeToFile:[self filePath] atomically:YES];
 }
 
-// تحميل البيانات والإعدادات من الملف
 - (void)loadDataFromFile {
     NSString *path = [self filePath];
     if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
@@ -138,7 +138,10 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
         if (dict) {
             NSData *eventsData = [dict objectForKey:@"events"];
             if (eventsData) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
                 NSArray *loaded = [NSKeyedUnarchiver unarchiveObjectWithData:eventsData];
+#pragma clang diagnostic pop
                 if (loaded) {
                     [_recordedEvents setArray:loaded];
                 }
@@ -157,7 +160,6 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     [[NSFileManager defaultManager] removeItemAtPath:[self filePath] error:nil];
 }
 
-// بناء واجهة المستخدم العائمة
 - (void)setupUI {
     if (self.floatingWindow) return;
     
@@ -227,7 +229,6 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     
     [self.floatingWindow addSubview:container];
     
-    // التشغيل التلقائي عند الإقلاع اعتماداً على ما تم قراءته من الملف
     if (_persistentAutoStart && _recordedEvents.count > 0) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self startPlaybackLoop];
@@ -254,7 +255,6 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     [pan setTranslation:CGPointZero inView:self.floatingWindow];
 }
 
-#pragma mark - إجراءات الأزرار
 - (void)recordTapped:(id)sender { [self startRecording]; }
 - (void)stopTapped:(id)sender { [self stopAll]; }
 - (void)playTapped:(id)sender { [self startPlaybackLoop]; }
@@ -263,7 +263,6 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 
 - (void)autoSwitchChanged:(UISwitch *)sender {
     _persistentAutoStart = sender.isOn;
-    // حفظ التغيير فوراً في الملف
     [self saveMacroAndSettings];
 }
 
@@ -296,7 +295,6 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     [_recordedEvents addObject:ev];
 }
 
-#pragma mark - محاكاة اللمس
 - (void)injectTouchAtPoint:(CGPoint)point phase:(IOHIDDigitizerEventPhase)phase {
     if (!_hidClient) return;
     
@@ -341,9 +339,6 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 
 @end
 
-// ==========================================
-// 4. الخطافات (Hooks)
-// ==========================================
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
     %orig;
