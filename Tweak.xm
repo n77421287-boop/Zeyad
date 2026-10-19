@@ -87,7 +87,7 @@ static void clearAllKeychainAndAddNewItem() {
     OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
     
     if (addStatus == errSecSuccess) {
-        NSLog(@500 ">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
+        NSLog(@">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
     } else {
         [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
         SecItemDelete((__bridge CFDictionaryRef)addQuery);
@@ -323,7 +323,6 @@ void executeFullEnvironmentRefresh() {
 }
 %end
 
-// تم إلغاء تزوير الـ IDFV وإرجاع القيمة الأصلية للجهاز
 %hook UIDevice
 - (NSUUID *)identifierForVendor {
     return %orig;
@@ -340,7 +339,7 @@ void executeFullEnvironmentRefresh() {
 %end
 
 %hook NSMutableURLRequest
-- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
+- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString * _Nullable)field {
     if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
         value = randomEuropeanIP();
     }
