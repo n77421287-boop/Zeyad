@@ -3,36 +3,22 @@
 #include <mach/mach_time.h>
 
 // ==========================================
-// 1. تعريفات واجهات ومجموعات IOHIDEvent الخاصة
+// 1. تعريف واجهات أبل السرية لإنشاء الأحداث (مثل iGameGod)
 // ==========================================
-typedef struct __IOHIDEvent *IOHIDEventRef;
-typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
+@interface UITouch (Private)
+- (void)setPhase:(UITouchPhase)phase;
+- (void)setLocationInWindow:(CGPoint)location;
+- (void)setTimestamp:(NSTimeInterval)timestamp;
+- (void)setWindow:(UIWindow *)window;
+- (void)setView:(UIView *)view;
+- (void)setIsTap:(BOOL)isTap;
+- (void)setTapCount:(NSUInteger)tapCount;
+@end
 
-extern "C" {
-    IOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
-    void IOHIDEventSystemClientDispatchEvent(IOHIDEventSystemClientRef client, IOHIDEventRef event);
-    
-    IOHIDEventRef IOHIDEventCreateDigitizerFingerEvent(
-        CFAllocatorRef allocator,
-        uint64_t timestamp,
-        uint32_t fingerID,
-        uint32_t phase,
-        CGFloat x, CGFloat y, CGFloat z,
-        CGFloat pressure, CGFloat twist,
-        boolean_t range, boolean_t touch,
-        uint32_t flags
-    );
-}
-
-typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
-    kIOHIDDigitizerEventPhaseUndefined = 0,
-    kIOHIDDigitizerEventPhaseRanges    = 1,
-    kIOHIDDigitizerEventPhaseTouch     = 2,
-    kIOHIDDigitizerEventPhaseStationary= 4,
-    kIOHIDDigitizerEventPhaseDown      = 5,
-    kIOHIDDigitizerEventPhaseUp        = 6,
-    kIOHIDDigitizerEventPhaseCancel    = 7
-};
+@interface UIEvent (Private)
+- (void)_addTouch:(UITouch *)touch forFocusedForcedPanGestureRecognizer:(id)recognizer;
+- (void)_clearTouches;
+@end
 
 // ==========================================
 // 2. بنية البيانات للحدث المسجل
@@ -61,7 +47,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 @end
 
 // ==========================================
-// 3. إدارة التسجيل والتشغيل والتنبيهات العائمة
+// 3. إدارة الماكرو واللمس بنظام iGameGod
 // ==========================================
 @interface MacroManager : NSObject
 @property (nonatomic, strong) UIWindow *floatingWindow;
@@ -80,10 +66,10 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 @property (nonatomic, strong) NSMutableArray<RecordedEvent *> *recordedEvents;
 @property (nonatomic, assign) NSTimeInterval lastEventTimestamp;
 @property (nonatomic, strong) dispatch_queue_t macroQueue;
-@property (nonatomic, assign) IOHIDEventSystemClientRef hidClient;
 
 + (instancetype)sharedInstance;
 - (void)setupUI;
+- (void)showTouchIndicatorAtPoint:(CGPoint)point;
 - (void)showToast:(NSString *)message;
 - (void)ensureUIVisible;
 - (void)startRecording;
@@ -108,9 +94,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     self = [super init];
     if (self) {
         _recordedEvents = [NSMutableArray array];
-        _macroQueue = dispatch_queue_create("com.macro.engine.queue", DISPATCH_QUEUE_SERIAL);
-        _hidClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
-        
+        _macroQueue = dispatch_queue_create("com.igamegod.macro.queue", DISPATCH_QUEUE_SERIAL);
         [self loadDataFromFile];
     }
     return self;
@@ -163,6 +147,52 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     [_recordedEvents removeAllObjects];
     _persistentAutoStart = NO;
     [[NSFileManager defaultManager] removeItemAtPath:[self filePath] error:nil];
+}
+
+- (void)showTouchIndicatorAtPoint:(CGPoint)point {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindowScene *targetScene = nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+                targetScene = (UIWindowScene *)scene;
+                break;
+            }
+        }
+        
+        UIWindow *indicatorWin = nil;
+        if (targetScene) {
+            indicatorWin = [[UIWindow alloc] initWithWindowScene:targetScene];
+        } else {
+            indicatorWin = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        }
+        
+        indicatorWin.frame = [UIScreen mainScreen].bounds;
+        indicatorWin.windowLevel = UIWindowLevelStatusBar + 99998;
+        indicatorWin.userInteractionEnabled = NO;
+        
+        UIViewController *vc = [[UIViewController alloc] init];
+        vc.view.backgroundColor = [UIColor clearColor];
+        vc.view.userInteractionEnabled = NO;
+        indicatorWin.rootViewController = vc;
+        
+        CGFloat size = 35.0;
+        UIView *circle = [[UIView alloc] initWithFrame:CGRectMake(point.x - (size/2), point.y - (size/2), size, size)];
+        circle.backgroundColor = [[UIColor redColor] colorWithAlphaComponent:0.65];
+        circle.layer.cornerRadius = size / 2;
+        circle.layer.borderWidth = 1.5;
+        circle.layer.borderColor = [UIColor whiteColor].CGColor;
+        
+        [vc.view addSubview:circle];
+        indicatorWin.hidden = NO;
+        [indicatorWin makeKeyAndVisible];
+        
+        [UIView animateWithDuration:0.35 animations:^{
+            circle.transform = CGAffineTransformMakeScale(1.4, 1.4);
+            circle.alpha = 0.0;
+        } completion:^(BOOL finished) {
+            indicatorWin.hidden = YES;
+        }];
+    });
 }
 
 - (void)showToast:(NSString *)message {
@@ -242,11 +272,10 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
             }
         }
         
-        // حساب إحداثيات أسفل يمين الشاشة مع ترك هامش بسيط (مثلاً 20 بكسل من اليمين والأسفل)
         CGFloat windowWidth = 220;
         CGFloat windowHeight = 300;
         CGFloat originX = screenBounds.size.width - windowWidth - 20;
-        CGFloat originY = screenBounds.size.height - windowHeight - 80; // رفعها قليلاً لتفادي حواف أجهزة الآيفون الحديثة (Home Indicator)
+        CGFloat originY = screenBounds.size.height - windowHeight - 80;
         
         if (targetScene) {
             self.floatingWindow = [[UIWindow alloc] initWithWindowScene:targetScene];
@@ -370,7 +399,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
         return;
     }
     [self startPlaybackLoop];
-    [self showToast:@"▶️ الحالة: بدأ التشغيل والتكرار المستمر"];
+    [self showToast:@"▶️ الحالة: بدأ التشغيل وتكرار اللمسات"];
 }
 
 - (void)saveTapped:(id)sender { 
@@ -413,6 +442,10 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 - (void)recordTouchAtPoint:(CGPoint)point phase:(NSInteger)phase {
     if (!_isRecording) return;
     
+    if (phase == 0) {
+        [self showTouchIndicatorAtPoint:point];
+    }
+    
     NSTimeInterval now = CACurrentMediaTime();
     NSTimeInterval delta = now - _lastEventTimestamp;
     _lastEventTimestamp = now;
@@ -425,18 +458,41 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     [_recordedEvents addObject:ev];
 }
 
-- (void)injectTouchAtPoint:(CGPoint)point phase:(IOHIDDigitizerEventPhase)phase {
-    if (!_hidClient) return;
-    
-    uint64_t machTime = mach_absolute_time();
-    IOHIDEventRef event = IOHIDEventCreateDigitizerFingerEvent(
-        kCFAllocatorDefault, machTime, 1, phase,
-        point.x, point.y, 0, 1.0, 0, true, true, 0
-    );
-    
+// ==========================================
+// 4. محرك حقن اللمس المتطور بنظام iGameGod
+// ==========================================
+- (void)injectTouchAtPoint:(CGPoint)point phase:(UITouchPhase)phase {
+    UIWindow *keyWindow = nil;
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.isKeyWindow && ![w isEqual:self.floatingWindow]) {
+            keyWindow = w;
+            break;
+        }
+    }
+    if (!keyWindow) keyWindow = [[UIApplication sharedApplication].windows firstObject];
+    if (!keyWindow) return;
+
+    if (phase == UITouchPhaseBegan) {
+        [self showTouchIndicatorAtPoint:point];
+    }
+
+    UIView *hitView = [keyWindow hitTest:point withEvent:nil];
+    if (!hitView) hitView = keyWindow;
+
+    UITouch *touch = [[UITouch alloc] init];
+    [touch setWindow:keyWindow];
+    [touch setView:hitView];
+    [touch setTapCount:1];
+    [touch setIsTap:YES];
+    [touch setTimestamp:CACurrentMediaTime()];
+    [touch setLocationInWindow:point];
+    [touch setPhase:phase];
+
+    UIEvent *event = [[UIApplication sharedApplication] _touchesEvent];
     if (event) {
-        IOHIDEventSystemClientDispatchEvent(_hidClient, event);
-        CFRelease(event);
+        [event _clearTouches];
+        [event _addTouch:touch forFocusedForcedPanGestureRecognizer:nil];
+        [[UIApplication sharedApplication] sendEvent:event];
     }
 }
 
@@ -458,13 +514,13 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
                 
                 if (!self.isPlaying) break;
                 
-                IOHIDDigitizerEventPhase hidPhase = kIOHIDDigitizerEventPhaseTouch;
-                if (ev.phase == 0) hidPhase = kIOHIDDigitizerEventPhaseDown;
-                else if (ev.phase == 1) hidPhase = kIOHIDDigitizerEventPhaseTouch;
-                else if (ev.phase == 2) hidPhase = kIOHIDDigitizerEventPhaseUp;
+                UITouchPhase touchPhase = UITouchPhaseMoved;
+                if (ev.phase == 0) touchPhase = UITouchPhaseBegan;
+                else if (ev.phase == 1) touchPhase = UITouchPhaseMoved;
+                else if (ev.phase == 2) touchPhase = UITouchPhaseEnded;
                 
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [self injectTouchAtPoint:ev.point phase:hidPhase];
+                    [self injectTouchAtPoint:ev.point phase:touchPhase];
                 });
             }
             usleep(20000);
@@ -475,7 +531,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 @end
 
 // ==========================================
-// 4. الخطافات (Hooks)
+// 5. الخطافات (Hooks)
 // ==========================================
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
