@@ -61,7 +61,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 @end
 
 // ==========================================
-// 3. إدارة التسجيل والتشغيل والواجهة عبر الملفات
+// 3. إدارة التسجيل والتشغيل فائق الاستجابة
 // ==========================================
 @interface MacroManager : NSObject
 @property (nonatomic, strong) UIWindow *floatingWindow;
@@ -81,6 +81,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 
 + (instancetype)sharedInstance;
 - (void)setupUI;
+- (void)ensureUIVisible;
 - (void)startRecording;
 - (void)stopAll;
 - (void)saveMacroAndSettings;
@@ -160,80 +161,96 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     [[NSFileManager defaultManager] removeItemAtPath:[self filePath] error:nil];
 }
 
+- (void)ensureUIVisible {
+    if (!self.floatingWindow) {
+        [self setupUI];
+    } else {
+        self.floatingWindow.hidden = NO;
+        [self.floatingWindow makeKeyAndVisible];
+    }
+}
+
 - (void)setupUI {
     if (self.floatingWindow) return;
     
-    UIWindowScene *scene = nil;
-    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-        if ([s isKindOfClass:[UIWindowScene class]]) {
-            scene = (UIWindowScene *)s;
-            break;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindowScene *targetScene = nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+                targetScene = (UIWindowScene *)scene;
+                break;
+            }
         }
-    }
-    
-    if (scene) {
-        self.floatingWindow = [[UIWindow alloc] initWithWindowScene:scene];
-    } else {
-        self.floatingWindow = [[UIWindow alloc] initWithFrame:CGRectMake(20, 100, 220, 270)];
-    }
-    
-    self.floatingWindow.frame = CGRectMake(20, 100, 220, 270);
-    self.floatingWindow.windowLevel = UIWindowLevelAlert + 9999;
-    self.floatingWindow.hidden = NO;
-    
-    UIView *container = [[UIView alloc] initWithFrame:self.floatingWindow.bounds];
-    container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.75];
-    container.layer.cornerRadius = 14;
-    container.layer.borderWidth = 1.5;
-    container.layer.borderColor = [UIColor cyanColor].CGColor;
-    
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
-    [container addGestureRecognizer:pan];
-    
-    _recordButton = [self createButtonWithTitle:@"🔴 تسجيل" action:@selector(recordTapped:) color:[UIColor systemRedColor]];
-    _recordButton.frame = CGRectMake(10, 10, 200, 35);
-    
-    _stopButton = [self createButtonWithTitle:@"⏹️ إيقاف" action:@selector(stopTapped:) color:[UIColor systemOrangeColor]];
-    _stopButton.frame = CGRectMake(10, 50, 200, 35);
-    
-    _playButton = [self createButtonWithTitle:@"▶️ تشغيل وتكرار" action:@selector(playTapped:) color:[UIColor systemGreenColor]];
-    _playButton.frame = CGRectMake(10, 90, 200, 35);
-    
-    UIButton *saveBtn = [self createButtonWithTitle:@"💾 حفظ الحركات" action:@selector(saveTapped:) color:[UIColor systemBlueColor]];
-    saveBtn.frame = CGRectMake(10, 130, 95, 30);
-    
-    UIButton *clearBtn = [self createButtonWithTitle:@"🗑️ حذف" action:@selector(clearTapped:) color:[UIColor systemGrayColor]];
-    clearBtn.frame = CGRectMake(115, 130, 95, 30);
-    
-    UILabel *autoLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 170, 140, 30)];
-    autoLabel.text = @"تشغيل تلقائي دائم:";
-    autoLabel.textColor = [UIColor whiteColor];
-    autoLabel.font = [UIFont systemFontOfSize:12];
-    
-    _autoStartSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(160, 170, 50, 30)];
-    [_autoStartSwitch setOn:_persistentAutoStart];
-    [_autoStartSwitch addTarget:self action:@selector(autoSwitchChanged:) forControlEvents:UIControlEventValueChanged];
-    
-    UIButton *hideBtn = [self createButtonWithTitle:@"إخفاء الواجهة" action:@selector(hideTapped:) color:[UIColor darkGrayColor]];
-    hideBtn.frame = CGRectMake(10, 215, 200, 30);
-    hideBtn.titleLabel.font = [UIFont systemFontOfSize:10];
-    
-    [container addSubview:_recordButton];
-    [container addSubview:_stopButton];
-    [container addSubview:_playButton];
-    [container addSubview:saveBtn];
-    [container addSubview:clearBtn];
-    [container addSubview:autoLabel];
-    [container addSubview:_autoStartSwitch];
-    [container addSubview:hideBtn];
-    
-    [self.floatingWindow addSubview:container];
-    
-    if (_persistentAutoStart && _recordedEvents.count > 0) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self startPlaybackLoop];
-        });
-    }
+        
+        if (targetScene) {
+            self.floatingWindow = [[UIWindow alloc] initWithWindowScene:targetScene];
+        } else {
+            self.floatingWindow = [[UIWindow alloc] initWithFrame:CGRectMake(20, 100, 220, 270)];
+        }
+        
+        self.floatingWindow.frame = CGRectMake(20, 100, 220, 270);
+        self.floatingWindow.windowLevel = UIWindowLevelStatusBar + 99999;
+        
+        UIViewController *vc = [[UIViewController alloc] init];
+        vc.view.backgroundColor = [UIColor clearColor];
+        self.floatingWindow.rootViewController = vc;
+        
+        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 220, 270)];
+        container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        container.layer.cornerRadius = 14;
+        container.layer.borderWidth = 1.5;
+        container.layer.borderColor = [UIColor cyanColor].CGColor;
+        
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
+        [container addGestureRecognizer:pan];
+        
+        self->_recordButton = [self createButtonWithTitle:@"🔴 تسجيل" action:@selector(recordTapped:) color:[UIColor systemRedColor]];
+        self->_recordButton.frame = CGRectMake(10, 10, 200, 35);
+        
+        self->_stopButton = [self createButtonWithTitle:@"⏹️ إيقاف" action:@selector(stopTapped:) color:[UIColor systemOrangeColor]];
+        self->_stopButton.frame = CGRectMake(10, 50, 200, 35);
+        
+        self->_playButton = [self createButtonWithTitle:@"▶️ تشغيل وتكرار" action:@selector(playTapped:) color:[UIColor systemGreenColor]];
+        self->_playButton.frame = CGRectMake(10, 90, 200, 35);
+        
+        UIButton *saveBtn = [self createButtonWithTitle:@"💾 حفظ الحركات" action:@selector(saveTapped:) color:[UIColor systemBlueColor]];
+        saveBtn.frame = CGRectMake(10, 130, 95, 30);
+        
+        UIButton *clearBtn = [self createButtonWithTitle:@"🗑️ حذف" action:@selector(clearTapped:) color:[UIColor systemGrayColor]];
+        clearBtn.frame = CGRectMake(115, 130, 95, 30);
+        
+        UILabel *autoLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 170, 140, 30)];
+        autoLabel.text = @"تشغيل تلقائي دائم:";
+        autoLabel.textColor = [UIColor whiteColor];
+        autoLabel.font = [UIFont systemFontOfSize:12];
+        
+        self->_autoStartSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(160, 170, 50, 30)];
+        [self->_autoStartSwitch setOn:self.persistentAutoStart];
+        [self->_autoStartSwitch addTarget:self action:@selector(autoSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+        
+        UIButton *hideBtn = [self createButtonWithTitle:@"إخفاء الواجهة" action:@selector(hideTapped:) color:[UIColor darkGrayColor]];
+        hideBtn.frame = CGRectMake(10, 215, 200, 30);
+        hideBtn.titleLabel.font = [UIFont systemFontOfSize:10];
+        
+        [container addSubview:self->_recordButton];
+        [container addSubview:self->_stopButton];
+        [container addSubview:self->_playButton];
+        [container addSubview:saveBtn];
+        [container addSubview:clearBtn];
+        [container addSubview:autoLabel];
+        [container addSubview:self->_autoStartSwitch];
+        [container addSubview:hideBtn];
+        
+        [vc.view addSubview:container];
+        
+        [self.floatingWindow makeKeyAndVisible];
+        
+        if (self.persistentAutoStart && self.recordedEvents.count > 0) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self startPlaybackLoop];
+            });
+        }
+    });
 }
 
 - (UIButton *)createButtonWithTitle:(NSString *)title action:(SEL)action color:(UIColor *)color {
@@ -276,8 +293,8 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 }
 
 - (void)stopAll {
-    _isRecording = NO;
-    _isPlaying = false;
+    _isRecording = NO; // تم تصحيح الخطأ هنا لتصبح علامة مساواة صحيحة
+    _isPlaying = NO;
 }
 
 - (void)recordTouchAtPoint:(CGPoint)point phase:(NSInteger)phase {
@@ -310,6 +327,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     }
 }
 
+// محرك تكرار فائق الاستجابة والسرعة دون تعليق أو تجميد
 - (void)startPlaybackLoop {
     if (_isPlaying || _recordedEvents.count == 0) return;
     _isPlaying = YES;
@@ -319,9 +337,15 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
             for (RecordedEvent *ev in self.recordedEvents) {
                 if (!self.isPlaying) break;
                 
-                if (ev.timeOffset > 0 && ev.timeOffset < 5.0) {
-                    usleep((useconds_t)(ev.timeOffset * 1000000.0));
+                // تقسيم وقت الانتظار إلى أجزاء صغيرة (مما يجعل زر الإيقاف يتوقف فوراً دون انتظار)
+                NSTimeInterval remaining = ev.timeOffset;
+                while (remaining > 0 && self.isPlaying) {
+                    NSTimeInterval slice = (remaining > 0.02) ? 0.02 : remaining;
+                    usleep((useconds_t)(slice * 1000000.0));
+                    remaining -= slice;
                 }
+                
+                if (!self.isPlaying) break;
                 
                 IOHIDDigitizerEventPhase hidPhase = kIOHIDDigitizerEventPhaseTouch;
                 if (ev.phase == 0) hidPhase = kIOHIDDigitizerEventPhaseDown;
@@ -332,13 +356,16 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
                     [self injectTouchAtPoint:ev.point phase:hidPhase];
                 });
             }
-            usleep(50000);
+            usleep(20000); // استراحة قصيرة جداً بين الدورات لمنع استهلاك المعالج
         }
     });
 }
 
 @end
 
+// ==========================================
+// 4. الخطافات (Hooks)
+// ==========================================
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
     %orig;
@@ -366,5 +393,12 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
         [[MacroManager sharedInstance] setupUI];
     });
     return orig;
+}
+%end
+
+%hook UIViewController
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    [[MacroManager sharedInstance] ensureUIVisible];
 }
 %end
