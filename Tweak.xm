@@ -3,7 +3,7 @@
 #include <mach/mach_time.h>
 
 // ==========================================
-// 1. تعريف واجهات أبل السرية لإنشاء الأحداث (مثل iGameGod)
+// 1. تعريف واجهات أبل السرية (مع تعريف _touchesEvent لتجنب خطأ الترجمة)
 // ==========================================
 @interface UITouch (Private)
 - (void)setPhase:(UITouchPhase)phase;
@@ -18,6 +18,10 @@
 @interface UIEvent (Private)
 - (void)_addTouch:(UITouch *)touch forFocusedForcedPanGestureRecognizer:(id)recognizer;
 - (void)_clearTouches;
+@end
+
+@interface UIApplication (Private)
+- (UIEvent *)_touchesEvent;
 @end
 
 // ==========================================
@@ -47,7 +51,7 @@
 @end
 
 // ==========================================
-// 3. إدارة الماكرو واللمس بنظام iGameGod
+// 3. إدارة الماكرو واللمس
 // ==========================================
 @interface MacroManager : NSObject
 @property (nonatomic, strong) UIWindow *floatingWindow;
@@ -459,7 +463,7 @@
 }
 
 // ==========================================
-// 4. محرك حقن اللمس المتطور بنظام iGameGod
+// 4. محرك حقن اللمس
 // ==========================================
 - (void)injectTouchAtPoint:(CGPoint)point phase:(UITouchPhase)phase {
     UIWindow *keyWindow = nil;
