@@ -61,10 +61,13 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 @end
 
 // ==========================================
-// 3. إدارة التسجيل والتشغيل فائق الاستجابة
+// 3. إدارة التسجيل والتشغيل والتنبيهات العائمة
 // ==========================================
 @interface MacroManager : NSObject
 @property (nonatomic, strong) UIWindow *floatingWindow;
+@property (nonatomic, strong) UIWindow *toastWindow;
+@property (nonatomic, strong) UILabel *toastLabel;
+
 @property (nonatomic, strong) UIButton *recordButton;
 @property (nonatomic, strong) UIButton *stopButton;
 @property (nonatomic, strong) UIButton *playButton;
@@ -81,6 +84,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 
 + (instancetype)sharedInstance;
 - (void)setupUI;
+- (void)showToast:(NSString *)message;
 - (void)ensureUIVisible;
 - (void)startRecording;
 - (void)stopAll;
@@ -161,6 +165,59 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     [[NSFileManager defaultManager] removeItemAtPath:[self filePath] error:nil];
 }
 
+- (void)showToast:(NSString *)message {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!self.toastWindow) {
+            UIWindowScene *targetScene = nil;
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+                    targetScene = (UIWindowScene *)scene;
+                    break;
+                }
+            }
+            
+            if (targetScene) {
+                self.toastWindow = [[UIWindow alloc] initWithWindowScene:targetScene];
+            } else {
+                self.toastWindow = [[UIWindow alloc] initWithFrame:CGRectMake(50, 200, 314, 50)];
+            }
+            
+            self.toastWindow.windowLevel = UIWindowLevelStatusBar + 100000;
+            self.toastWindow.userInteractionEnabled = NO;
+            
+            UIViewController *toastVC = [[UIViewController alloc] init];
+            toastVC.view.backgroundColor = [UIColor clearColor];
+            toastVC.view.userInteractionEnabled = NO;
+            self.toastWindow.rootViewController = toastVC;
+            
+            self.toastLabel = [[UILabel alloc] initWithFrame:CGRectMake(40, 100, 294, 45)];
+            self.toastLabel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+            self.toastLabel.textColor = [UIColor cyanColor];
+            self.toastLabel.font = [UIFont boldSystemFontOfSize:13];
+            self.toastLabel.textAlignment = NSTextAlignmentCenter;
+            self.toastLabel.layer.cornerRadius = 10;
+            self.toastLabel.clipsToBounds = YES;
+            self.toastLabel.layer.borderWidth = 1.0;
+            self.toastLabel.layer.borderColor = [UIColor cyanColor].CGColor;
+            
+            [toastVC.view addSubview:self.toastLabel];
+        }
+        
+        self.toastLabel.text = message;
+        self.toastWindow.hidden = NO;
+        [self.toastWindow makeKeyAndVisible];
+        
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideToast) object:nil];
+        [self performSelector:@selector(hideToast) withObject:nil afterDelay:2.0];
+    });
+}
+
+- (void)hideToast {
+    if (self.toastWindow) {
+        self.toastWindow.hidden = YES;
+    }
+}
+
 - (void)ensureUIVisible {
     if (!self.floatingWindow) {
         [self setupUI];
@@ -175,63 +232,88 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindowScene *targetScene = nil;
+        CGRect screenBounds = [UIScreen mainScreen].bounds;
+        
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
                 targetScene = (UIWindowScene *)scene;
+                screenBounds = ((UIWindowScene *)scene).coordinateSpace.bounds;
                 break;
             }
         }
         
+        // حساب إحداثيات أسفل يمين الشاشة مع ترك هامش بسيط (مثلاً 20 بكسل من اليمين والأسفل)
+        CGFloat windowWidth = 220;
+        CGFloat windowHeight = 300;
+        CGFloat originX = screenBounds.size.width - windowWidth - 20;
+        CGFloat originY = screenBounds.size.height - windowHeight - 80; // رفعها قليلاً لتفادي حواف أجهزة الآيفون الحديثة (Home Indicator)
+        
         if (targetScene) {
             self.floatingWindow = [[UIWindow alloc] initWithWindowScene:targetScene];
         } else {
-            self.floatingWindow = [[UIWindow alloc] initWithFrame:CGRectMake(20, 100, 220, 270)];
+            self.floatingWindow = [[UIWindow alloc] initWithFrame:CGRectMake(originX, originY, windowWidth, windowHeight)];
         }
         
-        self.floatingWindow.frame = CGRectMake(20, 100, 220, 270);
+        self.floatingWindow.frame = CGRectMake(originX, originY, windowWidth, windowHeight);
         self.floatingWindow.windowLevel = UIWindowLevelStatusBar + 99999;
+        self.floatingWindow.userInteractionEnabled = YES;
         
         UIViewController *vc = [[UIViewController alloc] init];
         vc.view.backgroundColor = [UIColor clearColor];
+        vc.view.userInteractionEnabled = YES;
         self.floatingWindow.rootViewController = vc;
         
-        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 220, 270)];
-        container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, windowWidth, windowHeight)];
+        container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.92];
         container.layer.cornerRadius = 14;
         container.layer.borderWidth = 1.5;
         container.layer.borderColor = [UIColor cyanColor].CGColor;
+        container.clipsToBounds = YES;
+        container.userInteractionEnabled = YES;
+        
+        UIView *dragBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, windowWidth, 30)];
+        dragBar.backgroundColor = [[UIColor darkGrayColor] colorWithAlphaComponent:0.6];
+        dragBar.userInteractionEnabled = YES;
+        
+        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, windowWidth - 20, 30)];
+        titleLabel.text = @"≡ اسحب هنا لتحريك النافذة";
+        titleLabel.textColor = [UIColor lightGrayColor];
+        titleLabel.font = [UIFont systemFontOfSize:11];
+        titleLabel.textAlignment = NSTextAlignmentCenter;
+        [dragBar addSubview:titleLabel];
         
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
-        [container addGestureRecognizer:pan];
+        [dragBar addGestureRecognizer:pan];
         
         self->_recordButton = [self createButtonWithTitle:@"🔴 تسجيل" action:@selector(recordTapped:) color:[UIColor systemRedColor]];
-        self->_recordButton.frame = CGRectMake(10, 10, 200, 35);
+        self->_recordButton.frame = CGRectMake(10, 40, windowWidth - 20, 35);
         
         self->_stopButton = [self createButtonWithTitle:@"⏹️ إيقاف" action:@selector(stopTapped:) color:[UIColor systemOrangeColor]];
-        self->_stopButton.frame = CGRectMake(10, 50, 200, 35);
+        self->_stopButton.frame = CGRectMake(10, 80, windowWidth - 20, 35);
         
         self->_playButton = [self createButtonWithTitle:@"▶️ تشغيل وتكرار" action:@selector(playTapped:) color:[UIColor systemGreenColor]];
-        self->_playButton.frame = CGRectMake(10, 90, 200, 35);
+        self->_playButton.frame = CGRectMake(10, 120, windowWidth - 20, 35);
         
-        UIButton *saveBtn = [self createButtonWithTitle:@"💾 حفظ الحركات" action:@selector(saveTapped:) color:[UIColor systemBlueColor]];
-        saveBtn.frame = CGRectMake(10, 130, 95, 30);
+        UIButton *saveBtn = [self createButtonWithTitle:@"💾 حفظ" action:@selector(saveTapped:) color:[UIColor systemBlueColor]];
+        saveBtn.frame = CGRectMake(10, 160, 95, 30);
         
         UIButton *clearBtn = [self createButtonWithTitle:@"🗑️ حذف" action:@selector(clearTapped:) color:[UIColor systemGrayColor]];
-        clearBtn.frame = CGRectMake(115, 130, 95, 30);
+        clearBtn.frame = CGRectMake(115, 160, 95, 30);
         
-        UILabel *autoLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 170, 140, 30)];
+        UILabel *autoLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 200, 140, 30)];
         autoLabel.text = @"تشغيل تلقائي دائم:";
         autoLabel.textColor = [UIColor whiteColor];
         autoLabel.font = [UIFont systemFontOfSize:12];
         
-        self->_autoStartSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(160, 170, 50, 30)];
+        self->_autoStartSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(windowWidth - 70, 200, 50, 30)];
         [self->_autoStartSwitch setOn:self.persistentAutoStart];
         [self->_autoStartSwitch addTarget:self action:@selector(autoSwitchChanged:) forControlEvents:UIControlEventValueChanged];
         
         UIButton *hideBtn = [self createButtonWithTitle:@"إخفاء الواجهة" action:@selector(hideTapped:) color:[UIColor darkGrayColor]];
-        hideBtn.frame = CGRectMake(10, 215, 200, 30);
-        hideBtn.titleLabel.font = [UIFont systemFontOfSize:10];
+        hideBtn.frame = CGRectMake(10, 245, windowWidth - 20, 35);
+        hideBtn.titleLabel.font = [UIFont systemFontOfSize:11];
         
+        [container addSubview:dragBar];
         [container addSubview:self->_recordButton];
         [container addSubview:self->_stopButton];
         [container addSubview:self->_playButton];
@@ -242,7 +324,6 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
         [container addSubview:hideBtn];
         
         [vc.view addSubview:container];
-        
         [self.floatingWindow makeKeyAndVisible];
         
         if (self.persistentAutoStart && self.recordedEvents.count > 0) {
@@ -259,6 +340,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     btn.backgroundColor = color;
     btn.layer.cornerRadius = 6;
+    btn.userInteractionEnabled = YES;
     [btn addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     return btn;
 }
@@ -272,18 +354,49 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     [pan setTranslation:CGPointZero inView:self.floatingWindow];
 }
 
-- (void)recordTapped:(id)sender { [self startRecording]; }
-- (void)stopTapped:(id)sender { [self stopAll]; }
-- (void)playTapped:(id)sender { [self startPlaybackLoop]; }
-- (void)saveTapped:(id)sender { [self saveMacroAndSettings]; }
-- (void)clearTapped:(id)sender { [self clearMacro]; }
+- (void)recordTapped:(id)sender { 
+    [self startRecording];
+    [self showToast:@"🔴 الحالة: بدأ تسجيل اللمسات..."];
+}
+
+- (void)stopTapped:(id)sender { 
+    [self stopAll];
+    [self showToast:@"⏹️ الحالة: تم إيقاف التسجيل والتشغيل"];
+}
+
+- (void)playTapped:(id)sender { 
+    if (self.recordedEvents.count == 0) {
+        [self showToast:@"⚠️ تنبيه: لا توجد حركات مسجلة للتشغيل!"];
+        return;
+    }
+    [self startPlaybackLoop];
+    [self showToast:@"▶️ الحالة: بدأ التشغيل والتكرار المستمر"];
+}
+
+- (void)saveTapped:(id)sender { 
+    [self saveMacroAndSettings];
+    [self showToast:@"💾 الحالة: تم حفظ الحركات بنجاح"];
+}
+
+- (void)clearTapped:(id)sender { 
+    [self clearMacro];
+    [self showToast:@"🗑️ الحالة: تم مسح وحذف التسجيلات"];
+}
 
 - (void)autoSwitchChanged:(UISwitch *)sender {
     _persistentAutoStart = sender.isOn;
     [self saveMacroAndSettings];
+    if (_persistentAutoStart) {
+        [self showToast:@"⚙️ تشغيل تلقائي دائم: [مفعل]"];
+    } else {
+        [self showToast:@"⚙️ تشغيل تلقائي دائم: [معطل]"];
+    }
 }
 
-- (void)hideTapped:(id)sender { self.floatingWindow.hidden = YES; }
+- (void)hideTapped:(id)sender { 
+    self.floatingWindow.hidden = YES;
+    [self showToast:@"👁️ تم إخفاء الواجهة"];
+}
 
 - (void)startRecording {
     [self stopAll];
@@ -293,7 +406,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 }
 
 - (void)stopAll {
-    _isRecording = NO; // تم تصحيح الخطأ هنا لتصبح علامة مساواة صحيحة
+    _isRecording = NO;
     _isPlaying = NO;
 }
 
@@ -327,7 +440,6 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
     }
 }
 
-// محرك تكرار فائق الاستجابة والسرعة دون تعليق أو تجميد
 - (void)startPlaybackLoop {
     if (_isPlaying || _recordedEvents.count == 0) return;
     _isPlaying = YES;
@@ -337,7 +449,6 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
             for (RecordedEvent *ev in self.recordedEvents) {
                 if (!self.isPlaying) break;
                 
-                // تقسيم وقت الانتظار إلى أجزاء صغيرة (مما يجعل زر الإيقاف يتوقف فوراً دون انتظار)
                 NSTimeInterval remaining = ev.timeOffset;
                 while (remaining > 0 && self.isPlaying) {
                     NSTimeInterval slice = (remaining > 0.02) ? 0.02 : remaining;
@@ -356,7 +467,7 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
                     [self injectTouchAtPoint:ev.point phase:hidPhase];
                 });
             }
-            usleep(20000); // استراحة قصيرة جداً بين الدورات لمنع استهلاك المعالج
+            usleep(20000);
         }
     });
 }
@@ -368,12 +479,22 @@ typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
 // ==========================================
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
+    UIWindow *floatingWin = [MacroManager sharedInstance].floatingWindow;
+    if (floatingWin && !floatingWin.hidden) {
+        for (UITouch *touch in event.allTouches) {
+            if ([touch.window isEqual:floatingWin]) {
+                %orig;
+                return;
+            }
+        }
+    }
+    
     %orig;
     if (event.type == UIEventTypeTouches) {
         MacroManager *manager = [MacroManager sharedInstance];
         if (manager.isRecording) {
             UITouch *touch = [[event.allTouches allObjects] firstObject];
-            if (touch) {
+            if (touch && ![[touch window] isEqual:floatingWin]) {
                 CGPoint pt = [touch locationInView:self];
                 NSInteger phase = 1;
                 if (touch.phase == UITouchPhaseBegan) phase = 0;
