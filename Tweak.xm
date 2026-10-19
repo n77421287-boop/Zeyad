@@ -3,29 +3,39 @@
 #include <mach/mach_time.h>
 
 // ==========================================
-// 1. تعريف واجهات أبل السرية (مع تعريف _touchesEvent لتجنب خطأ الترجمة)
+// 1. تعريف واجهات نظام IOHIDEvent (نظام iGameGod الحقيقي)
 // ==========================================
-@interface UITouch (Private)
-- (void)setPhase:(UITouchPhase)phase;
-- (void)setLocationInWindow:(CGPoint)location;
-- (void)setTimestamp:(NSTimeInterval)timestamp;
-- (void)setWindow:(UIWindow *)window;
-- (void)setView:(UIView *)view;
-- (void)setIsTap:(BOOL)isTap;
-- (void)setTapCount:(NSUInteger)tapCount;
-@end
+typedef struct __IOHIDEvent *IOHIDEventRef;
+typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
 
-@interface UIEvent (Private)
-- (void)_addTouch:(UITouch *)touch forFocusedForcedPanGestureRecognizer:(id)recognizer;
-- (void)_clearTouches;
-@end
+extern "C" {
+    IOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
+    void IOHIDEventSystemClientDispatchEvent(IOHIDEventSystemClientRef client, IOHIDEventRef event);
+    
+    IOHIDEventRef IOHIDEventCreateDigitizerFingerEvent(
+        CFAllocatorRef allocator,
+        uint64_t timestamp,
+        uint32_t fingerID,
+        uint32_t phase,
+        CGFloat x, CGFloat y, CGFloat z,
+        CGFloat pressure, CGFloat twist,
+        boolean_t range, boolean_t touch,
+        uint32_t flags
+    );
+}
 
-@interface UIApplication (Private)
-- (UIEvent *)_touchesEvent;
-@end
+typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
+    kIOHIDDigitizerEventPhaseUndefined = 0,
+    kIOHIDDigitizerEventPhaseRanges    = 1,
+    kIOHIDDigitizerEventPhaseTouch     = 2,
+    kIOHIDDigitizerEventPhaseStationary= 4,
+    kIOHIDDigitizerEventPhaseDown      = 5,
+    kIOHIDDigitizerEventPhaseUp        = 6,
+    kIOHIDDigitizerEventPhaseCancel    = 7
+};
 
 // ==========================================
-// 2. بنية البيانات للحدث المسجل
+// 2. بنية تخزين الحركات المسجلة
 // ==========================================
 @interface RecordedEvent : NSObject <NSCoding>
 @property (nonatomic, assign) CGPoint point;
@@ -51,7 +61,7 @@
 @end
 
 // ==========================================
-// 3. إدارة الماكرو واللمس
+// 3. إدارة التسجيل والتشغيل والواجهة العائمة
 // ==========================================
 @interface MacroManager : NSObject
 @property (nonatomic, strong) UIWindow *floatingWindow;
@@ -70,6 +80,7 @@
 @property (nonatomic, strong) NSMutableArray<RecordedEvent *> *recordedEvents;
 @property (nonatomic, assign) NSTimeInterval lastEventTimestamp;
 @property (nonatomic, strong) dispatch_queue_t macroQueue;
+@property (nonatomic, assign) IOHIDEventSystemClientRef hidClient;
 
 + (instancetype)sharedInstance;
 - (void)setupUI;
@@ -98,7 +109,8 @@
     self = [super init];
     if (self) {
         _recordedEvents = [NSMutableArray array];
-        _macroQueue = dispatch_queue_create("com.igamegod.macro.queue", DISPATCH_QUEUE_SERIAL);
+        _macroQueue = dispatch_queue_create("com.igamegod.clone.queue", DISPATCH_QUEUE_SERIAL);
+        _hidClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
         [self loadDataFromFile];
     }
     return self;
@@ -106,21 +118,17 @@
 
 - (NSString *)filePath {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    NSString *documentsDirectory = [paths objectAtIndex:0];
-    return [documentsDirectory stringByAppendingPathComponent:@"automacro_config.plist"];
+    return [[paths objectAtIndex:0] stringByAppendingPathComponent:@"automacro_config.plist"];
 }
 
 - (void)saveMacroAndSettings {
     NSMutableDictionary *dict = [NSMutableDictionary dictionary];
-    
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     NSData *eventsData = [NSKeyedArchiver archivedDataWithRootObject:_recordedEvents];
 #pragma clang diagnostic pop
-
     [dict setObject:eventsData forKey:@"events"];
     [dict setObject:@(_persistentAutoStart) forKey:@"autoStart"];
-    
     [dict writeToFile:[self filePath] atomically:YES];
 }
 
@@ -135,14 +143,10 @@
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
                 NSArray *loaded = [NSKeyedUnarchiver unarchiveObjectWithData:eventsData];
 #pragma clang diagnostic pop
-                if (loaded) {
-                    [_recordedEvents setArray:loaded];
-                }
+                if (loaded) [_recordedEvents setArray:loaded];
             }
             NSNumber *autoStartNum = [dict objectForKey:@"autoStart"];
-            if (autoStartNum) {
-                _persistentAutoStart = [autoStartNum boolValue];
-            }
+            if (autoStartNum) _persistentAutoStart = [autoStartNum boolValue];
         }
     }
 }
@@ -153,6 +157,7 @@
     [[NSFileManager defaultManager] removeItemAtPath:[self filePath] error:nil];
 }
 
+// دائرة حمراء بصرية للتأكيد
 - (void)showTouchIndicatorAtPoint:(CGPoint)point {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindowScene *targetScene = nil;
@@ -163,20 +168,13 @@
             }
         }
         
-        UIWindow *indicatorWin = nil;
-        if (targetScene) {
-            indicatorWin = [[UIWindow alloc] initWithWindowScene:targetScene];
-        } else {
-            indicatorWin = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        }
-        
+        UIWindow *indicatorWin = targetScene ? [[UIWindow alloc] initWithWindowScene:targetScene] : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
         indicatorWin.frame = [UIScreen mainScreen].bounds;
         indicatorWin.windowLevel = UIWindowLevelStatusBar + 99998;
         indicatorWin.userInteractionEnabled = NO;
         
         UIViewController *vc = [[UIViewController alloc] init];
         vc.view.backgroundColor = [UIColor clearColor];
-        vc.view.userInteractionEnabled = NO;
         indicatorWin.rootViewController = vc;
         
         CGFloat size = 35.0;
@@ -199,6 +197,7 @@
     });
 }
 
+// التنبيهات العائمة المؤقتة (تختفي بعد ثانيتين)
 - (void)showToast:(NSString *)message {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.toastWindow) {
@@ -209,19 +208,12 @@
                     break;
                 }
             }
-            
-            if (targetScene) {
-                self.toastWindow = [[UIWindow alloc] initWithWindowScene:targetScene];
-            } else {
-                self.toastWindow = [[UIWindow alloc] initWithFrame:CGRectMake(50, 200, 314, 50)];
-            }
-            
+            self.toastWindow = targetScene ? [[UIWindow alloc] initWithWindowScene:targetScene] : [[UIWindow alloc] initWithFrame:CGRectMake(50, 200, 314, 50)];
             self.toastWindow.windowLevel = UIWindowLevelStatusBar + 100000;
             self.toastWindow.userInteractionEnabled = NO;
             
             UIViewController *toastVC = [[UIViewController alloc] init];
             toastVC.view.backgroundColor = [UIColor clearColor];
-            toastVC.view.userInteractionEnabled = NO;
             self.toastWindow.rootViewController = toastVC;
             
             self.toastLabel = [[UILabel alloc] initWithFrame:CGRectMake(40, 100, 294, 45)];
@@ -233,7 +225,6 @@
             self.toastLabel.clipsToBounds = YES;
             self.toastLabel.layer.borderWidth = 1.0;
             self.toastLabel.layer.borderColor = [UIColor cyanColor].CGColor;
-            
             [toastVC.view addSubview:self.toastLabel];
         }
         
@@ -247,9 +238,7 @@
 }
 
 - (void)hideToast {
-    if (self.toastWindow) {
-        self.toastWindow.hidden = YES;
-    }
+    if (self.toastWindow) self.toastWindow.hidden = YES;
 }
 
 - (void)ensureUIVisible {
@@ -261,6 +250,7 @@
     }
 }
 
+// تصميم الواجهة العائمة أسفل يمين الشاشة
 - (void)setupUI {
     if (self.floatingWindow) return;
     
@@ -281,12 +271,7 @@
         CGFloat originX = screenBounds.size.width - windowWidth - 20;
         CGFloat originY = screenBounds.size.height - windowHeight - 80;
         
-        if (targetScene) {
-            self.floatingWindow = [[UIWindow alloc] initWithWindowScene:targetScene];
-        } else {
-            self.floatingWindow = [[UIWindow alloc] initWithFrame:CGRectMake(originX, originY, windowWidth, windowHeight)];
-        }
-        
+        self.floatingWindow = targetScene ? [[UIWindow alloc] initWithWindowScene:targetScene] : [[UIWindow alloc] initWithFrame:CGRectMake(originX, originY, windowWidth, windowHeight)];
         self.floatingWindow.frame = CGRectMake(originX, originY, windowWidth, windowHeight);
         self.floatingWindow.windowLevel = UIWindowLevelStatusBar + 99999;
         self.floatingWindow.userInteractionEnabled = YES;
@@ -419,11 +404,7 @@
 - (void)autoSwitchChanged:(UISwitch *)sender {
     _persistentAutoStart = sender.isOn;
     [self saveMacroAndSettings];
-    if (_persistentAutoStart) {
-        [self showToast:@"⚙️ تشغيل تلقائي دائم: [مفعل]"];
-    } else {
-        [self showToast:@"⚙️ تشغيل تلقائي دائم: [معطل]"];
-    }
+    [self showToast:_persistentAutoStart ? @"⚙️ تشغيل تلقائي دائم: [مفعل]" : @"⚙️ تشغيل تلقائي دائم: [معطل]"];
 }
 
 - (void)hideTapped:(id)sender { 
@@ -445,10 +426,7 @@
 
 - (void)recordTouchAtPoint:(CGPoint)point phase:(NSInteger)phase {
     if (!_isRecording) return;
-    
-    if (phase == 0) {
-        [self showTouchIndicatorAtPoint:point];
-    }
+    if (phase == 0) [self showTouchIndicatorAtPoint:point];
     
     NSTimeInterval now = CACurrentMediaTime();
     NSTimeInterval delta = now - _lastEventTimestamp;
@@ -458,45 +436,38 @@
     ev.point = point;
     ev.phase = phase;
     ev.timeOffset = delta;
-    
     [_recordedEvents addObject:ev];
 }
 
 // ==========================================
-// 4. محرك حقن اللمس
+// 4. محرك حقن اللمس الآمن والمستقر (IOHIDEvent)
 // ==========================================
-- (void)injectTouchAtPoint:(CGPoint)point phase:(UITouchPhase)phase {
-    UIWindow *keyWindow = nil;
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow && ![w isEqual:self.floatingWindow]) {
-            keyWindow = w;
-            break;
-        }
-    }
-    if (!keyWindow) keyWindow = [[UIApplication sharedApplication].windows firstObject];
-    if (!keyWindow) return;
-
-    if (phase == UITouchPhaseBegan) {
+- (void)injectTouchAtPoint:(CGPoint)point phase:(IOHIDDigitizerEventPhase)phase {
+    if (!_hidClient) return;
+    
+    if (phase == kIOHIDDigitizerEventPhaseDown) {
         [self showTouchIndicatorAtPoint:point];
     }
-
-    UIView *hitView = [keyWindow hitTest:point withEvent:nil];
-    if (!hitView) hitView = keyWindow;
-
-    UITouch *touch = [[UITouch alloc] init];
-    [touch setWindow:keyWindow];
-    [touch setView:hitView];
-    [touch setTapCount:1];
-    [touch setIsTap:YES];
-    [touch setTimestamp:CACurrentMediaTime()];
-    [touch setLocationInWindow:point];
-    [touch setPhase:phase];
-
-    UIEvent *event = [[UIApplication sharedApplication] _touchesEvent];
+    
+    uint64_t machTime = mach_absolute_time();
+    IOHIDEventRef event = IOHIDEventCreateDigitizerFingerEvent(
+        kCFAllocatorDefault,
+        machTime,
+        1,          // Finger ID
+        phase,      // Phase (Down, Touch, Up)
+        point.x,
+        point.y,
+        0,          // Z
+        1.0,        // Pressure
+        0,          // Twist
+        true,       // Range
+        true,       // Touch
+        0           // Flags
+    );
+    
     if (event) {
-        [event _clearTouches];
-        [event _addTouch:touch forFocusedForcedPanGestureRecognizer:nil];
-        [[UIApplication sharedApplication] sendEvent:event];
+        IOHIDEventSystemClientDispatchEvent(_hidClient, event);
+        CFRelease(event);
     }
 }
 
@@ -518,13 +489,13 @@
                 
                 if (!self.isPlaying) break;
                 
-                UITouchPhase touchPhase = UITouchPhaseMoved;
-                if (ev.phase == 0) touchPhase = UITouchPhaseBegan;
-                else if (ev.phase == 1) touchPhase = UITouchPhaseMoved;
-                else if (ev.phase == 2) touchPhase = UITouchPhaseEnded;
+                IOHIDDigitizerEventPhase hidPhase = kIOHIDDigitizerEventPhaseTouch;
+                if (ev.phase == 0) hidPhase = kIOHIDDigitizerEventPhaseDown;
+                else if (ev.phase == 1) hidPhase = kIOHIDDigitizerEventPhaseTouch;
+                else if (ev.phase == 2) hidPhase = kIOHIDDigitizerEventPhaseUp;
                 
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [self injectTouchAtPoint:ev.point phase:touchPhase];
+                    [self injectTouchAtPoint:ev.point phase:hidPhase];
                 });
             }
             usleep(20000);
@@ -535,7 +506,7 @@
 @end
 
 // ==========================================
-// 5. الخطافات (Hooks)
+// 5. الخطافات الأساسية (Hooks)
 // ==========================================
 %hook UIWindow
 - (void)sendEvent:(UIEvent *)event {
