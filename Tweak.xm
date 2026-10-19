@@ -1,524 +1,429 @@
-#import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+#import <AdSupport/AdSupport.h>
+#import <AppTrackingTransparency/AppTrackingTransparency.h>
+#import <Security/Security.h>
+#import <objc/runtime.h>
 
-// ==========================================
-// 1. بنية البيانات للحدث المسجل
-// ==========================================
-@interface RecordedEvent : NSObject <NSCoding>
-@property (nonatomic, assign) CGPoint point;
-@property (nonatomic, assign) NSInteger phase; // 0: Began, 1: Moved, 2: Ended
-@property (nonatomic, assign) NSTimeInterval timeOffset;
+@interface ActivatorAdService : NSObject
+- (void)loadAd;
+- (BOOL)isReady;
+- (BOOL)isAdReady;
+- (BOOL)canShowAd;
+- (BOOL)hasAdLoaded;
+- (void)showRewardAd;
+- (void)presentAdFromViewController:(UIViewController *)viewController;
 @end
 
-@implementation RecordedEvent
-- (void)encodeWithCoder:(NSCoder *)coder {
-    [coder encodeCGPoint:_point forKey:@"point"];
-    [coder encodeInteger:_phase forKey:@"phase"];
-    [coder encodeDouble:_timeOffset forKey:@"timeOffset"];
-}
-- (id)initWithCoder:(NSCoder *)coder {
-    self = [super init];
-    if (self) {
-        _point = [coder decodeCGPointForKey:@"point"];
-        _phase = [coder decodeIntegerForKey:@"phase"];
-        _timeOffset = [coder decodeDoubleForKey:@"timeOffset"];
+extern void executeFullEnvironmentRefresh(void);
+
+// متغيرات في الذاكرة لحفظ المعرفات الوهمية والمتجددة لكل جلسة تشغيل (شاملة الـ IDFA و IDFV و FID)
+static NSString *runtimeFreshIDFV = nil;
+static NSString *runtimeFreshIDFA = nil;
+static NSString *runtimeFreshFID  = nil;
+
+// 1. دالة الحذف العميق الآمن المضاد للاسترجاع (تدمير الملفات والمجلدات المتداخلة)
+static void secureDeepCleanDirectoryContents(NSString *dirPath, NSFileManager *fileManager, BOOL removeRootFolder) {
+    if (![fileManager fileExistsAtPath:dirPath]) return;
+    
+    NSDirectoryEnumerator *enumerator = [fileManager enumeratorAtURL:[NSURL fileURLWithPath:dirPath]
+                                           includingPropertiesForKeys:@[NSURLIsDirectoryKey]
+                                                              options:0
+                                                         errorHandler:^BOOL(NSURL *url, NSError *error) {
+        return YES;
+    }];
+    
+    NSMutableArray *filesList = [NSMutableArray array];
+    NSMutableArray *foldersList = [NSMutableArray array];
+    
+    for (NSURL *url in enumerator) {
+        NSNumber *isDirectory = nil;
+        [url getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
+        if ([isDirectory boolValue]) {
+            [foldersList addObject:url.path];
+        } else {
+            [filesList addObject:url.path];
+        }
     }
-    return self;
+    
+    // الكتابة فوق الملفات وتدمير محتواها لمنع الاسترجاع
+    for (NSString *filePath in filesList) {
+        @try {
+            [@"" writeToFile:filePath atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        } @catch (NSException *e) {}
+        [fileManager removeItemAtPath:filePath error:nil];
+    }
+    
+    // حذف المجلدات الفرعية بتسلسل عكسي
+    NSArray *reversedFolders = [[foldersList reverseObjectEnumerator] allObjects];
+    for (NSString *folderPath in reversedFolders) {
+        [fileManager removeItemAtPath:folderPath error:nil];
+    }
+    
+    if (removeRootFolder) {
+        [fileManager removeItemAtPath:dirPath error:nil];
+    }
+}
+
+// 2. دالة مسح وتطهير الـ Keychain وزرع التوكن الجديد
+static void clearAllKeychainAndAddNewItem() {
+    NSArray *secClasses = @[
+        (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecClassInternetPassword,
+        (__bridge id)kSecClassCertificate,
+        (__bridge id)kSecClassKey,
+        (__bridge id)kSecClassIdentity
+    ];
+    
+    NSString *primaryAccessGroup = @"3J96GNXKKU.*";
+    
+    for (id secClass in secClasses) {
+        NSDictionary *generalQuery = @{
+            (__bridge id)kSecClass: secClass
+        };
+        SecItemDelete((__bridge CFDictionaryRef)generalQuery);
+        
+        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+            NSDictionary *groupQuery = @{
+                (__bridge id)kSecClass: secClass,
+                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
+            };
+            SecItemDelete((__bridge CFDictionaryRef)groupQuery);
+        }
+        
+        NSMutableDictionary *spec = [NSMutableDictionary dictionaryWithDictionary:@{
+            (__bridge id)kSecClass: secClass,
+            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
+            (__bridge id)kSecReturnPersistentRef: @YES
+        }];
+        
+        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+            spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+        }
+        
+        CFArrayRef result = NULL;
+        if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
+            NSArray *items = (__bridge NSArray *)result;
+            for (id itemRef in items) {
+                NSDictionary *refQuery = @{
+                    (__bridge id)kSecValueRef: itemRef
+                };
+                SecItemDelete((__bridge CFDictionaryRef)refQuery);
+            }
+            CFRelease(result);
+        }
+    }
+    
+    NSString *serviceName = @"app.getsmscode";
+    NSString *accountName = @"tokenKey";
+    NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
+    
+    NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
+    
+    NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: serviceName,
+        (__bridge id)kSecAttrAccount: accountName,
+        (__bridge id)kSecValueData: tokenData
+    }];
+    
+    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+        addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+    }
+    
+    SecItemDelete((__bridge CFDictionaryRef)addQuery);
+    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+    
+    if (addStatus == errSecSuccess) {
+        NSLog(@">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
+    } else {
+        [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
+        SecItemDelete((__bridge CFDictionaryRef)addQuery);
+        OSStatus fallbackStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+        if (fallbackStatus == errSecSuccess) {
+            NSLog(@">>> [Dynamic-Refresh] Keychain wiped & tokenKey added via fallback mode.");
+        } else {
+            NSLog(@">>> [Dynamic-Refresh] Failed to add tokenKey, error code: %d", (int)fallbackStatus);
+        }
+    }
+}
+
+static NSString *randomEuropeanIP() {
+    return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
+}
+
+// 3. التسلسل الهرمي الصارم للتنظيف الكامل مع توليد هوكات معرفات وهمية جديدة (شاملة الـ FID)
+void executeFullEnvironmentRefresh() {
+    @autoreleasepool {
+        // توليد معرفات وهمية جديدة كلياً في الذاكرة (IDFA, IDFV, FID)
+        runtimeFreshIDFV = [[NSUUID UUID] UUIDString];
+        runtimeFreshIDFA = [[NSUUID UUID] UUIDString];
+        runtimeFreshFID  = [[[NSUUID UUID] UUIDString] lowercaseString]; // تنسيق خاص لمعرفات الفايربيز
+        
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        NSString *homeDir = NSHomeDirectory();
+        
+        // الخطوة الأولى: مسح إعدادات NSUserDefaults بالكامل
+        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+        if (bundleIdentifier) {
+            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
+            [[NSUserDefaults standardUserDefaults] synchronize];
+        }
+        
+        // الخطوة الثانية: تنفيذ الحذف العميق للملفات والمجلدات في حاوية التطبيق
+        NSArray *targetDirs = @[
+            @"Documents",
+            @"Library/Caches",
+            @"Library/Application Support",
+            @"Library/Preferences",
+            @"Library/Cookies",
+            @"Library/Saved Application State",
+            @"tmp"
+        ];
+        
+        for (NSString *subDir in targetDirs) {
+            NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
+            secureDeepCleanDirectoryContents(targetPath, fileManager, NO);
+        }
+        
+        NSError *error = nil;
+        NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
+        for (NSString *item in homeContents) {
+            NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
+            secureDeepCleanDirectoryContents(fullPath, fileManager, YES);
+        }
+        
+        // الخطوة الثالثة: تطبيق الحذف العميق على الـ App Groups
+        NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
+        if ([fileManager fileExistsAtPath:groupDirBase]) {
+            NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
+            for (NSString *groupFolder in groupFolders) {
+                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
+                secureDeepCleanDirectoryContents(groupPath, fileManager, YES);
+            }
+        }
+
+        // الخطوة الرابعة والأخيرة: مسح الـ Keychain وزرع التوكن الجديد
+        clearAllKeychainAndAddNewItem();
+        
+        NSLog(@">>> [Manual-Refresh] RUNTIME FAKE IDFA: %@ | IDFV: %@ | FID: %@ GENERATED.", runtimeFreshIDFA, runtimeFreshIDFV, runtimeFreshFID);
+    }
+}
+
+// 4. نافذة مخصصة للزر العائم
+@interface FloatingButtonWindow : UIWindow
+@property (nonatomic, strong) UIButton *targetButton;
+@end
+
+@implementation FloatingButtonWindow
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    if (!self.targetButton) return NO;
+    CGPoint buttonPoint = [self convertPoint:point toView:self.targetButton];
+    return [self.targetButton pointInside:buttonPoint withEvent:event];
 }
 @end
 
-// ==========================================
-// 2. إدارة الماكرو والتشغيل الآمن 100%
-// ==========================================
-@interface MacroManager : NSObject
-@property (nonatomic, strong) UIWindow *floatingWindow;
-@property (nonatomic, strong) UIWindow *toastWindow;
-@property (nonatomic, strong) UILabel *toastLabel;
-
-@property (nonatomic, strong) UIButton *recordButton;
-@property (nonatomic, strong) UIButton *stopButton;
-@property (nonatomic, strong) UIButton *playButton;
-@property (nonatomic, strong) UISwitch *autoStartSwitch;
-
-@property (nonatomic, assign) BOOL isRecording;
-@property (nonatomic, assign) BOOL isPlaying;
-@property (nonatomic, assign) BOOL persistentAutoStart;
-
-@property (nonatomic, strong) NSMutableArray<RecordedEvent *> *recordedEvents;
-@property (nonatomic, assign) NSTimeInterval lastEventTimestamp;
-@property (nonatomic, strong) dispatch_queue_t macroQueue;
-
+@interface FloatingButtonManager : NSObject
 + (instancetype)sharedInstance;
-- (void)setupUI;
-- (void)showTouchIndicatorAtPoint:(CGPoint)point;
-- (void)showToast:(NSString *)message;
-- (void)ensureUIVisible;
-- (void)startRecording;
-- (void)stopAll;
-- (void)saveMacroAndSettings;
-- (void)clearMacro;
-- (void)startPlaybackLoop;
+- (void)showFloatingButton;
 @end
 
-@implementation MacroManager
+@implementation FloatingButtonManager {
+    FloatingButtonWindow *floatingWindow;
+    UIButton *refreshButton;
+}
 
 + (instancetype)sharedInstance {
-    static MacroManager *sharedInstance = nil;
+    static FloatingButtonManager *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sharedInstance = [[MacroManager alloc] init];
+        sharedInstance = [[FloatingButtonManager alloc] init];
     });
     return sharedInstance;
 }
 
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        _recordedEvents = [NSMutableArray array];
-        _macroQueue = dispatch_queue_create("com.autoclicker.safe.queue", DISPATCH_QUEUE_SERIAL);
-        [self loadDataFromFile];
-    }
-    return self;
-}
-
-- (NSString *)filePath {
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    return [[paths objectAtIndex:0] stringByAppendingPathComponent:@"automacro_config.plist"];
-}
-
-- (void)saveMacroAndSettings {
-    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    NSData *eventsData = [NSKeyedArchiver archivedDataWithRootObject:_recordedEvents];
-#pragma clang diagnostic pop
-    [dict setObject:eventsData forKey:@"events"];
-    [dict setObject:@(_persistentAutoStart) forKey:@"autoStart"];
-    [dict writeToFile:[self filePath] atomically:YES];
-}
-
-- (void)loadDataFromFile {
-    NSString *path = [self filePath];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-        if (dict) {
-            NSData *eventsData = [dict objectForKey:@"events"];
-            if (eventsData) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-                NSArray *loaded = [NSKeyedUnarchiver unarchiveObjectWithData:eventsData];
-#pragma clang diagnostic pop
-                if (loaded) [_recordedEvents setArray:loaded];
-            }
-            NSNumber *autoStartNum = [dict objectForKey:@"autoStart"];
-            if (autoStartNum) _persistentAutoStart = [autoStartNum boolValue];
+- (void)showFloatingButton {
+    if (self->floatingWindow) return;
+    
+    UIWindowScene *targetScene = nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+            targetScene = (UIWindowScene *)scene;
+            break;
         }
     }
-}
-
-- (void)clearMacro {
-    [_recordedEvents removeAllObjects];
-    _persistentAutoStart = NO;
-    [[NSFileManager defaultManager] removeItemAtPath:[self filePath] error:nil];
-}
-
-// مؤشر دائري أحمر بصري
-- (void)showTouchIndicatorAtPoint:(CGPoint)point {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindowScene *targetScene = nil;
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                targetScene = (UIWindowScene *)scene;
-                break;
-            }
-        }
-        
-        UIWindow *indicatorWin = targetScene ? [[UIWindow alloc] initWithWindowScene:targetScene] : [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        indicatorWin.frame = [UIScreen mainScreen].bounds;
-        indicatorWin.windowLevel = UIWindowLevelStatusBar + 99998;
-        indicatorWin.userInteractionEnabled = NO;
-        
-        UIViewController *vc = [[UIViewController alloc] init];
-        vc.view.backgroundColor = [UIColor clearColor];
-        indicatorWin.rootViewController = vc;
-        
-        CGFloat size = 35.0;
-        UIView *circle = [[UIView alloc] initWithFrame:CGRectMake(point.x - (size/2), point.y - (size/2), size, size)];
-        circle.backgroundColor = [[UIColor redColor] colorWithAlphaComponent:0.65];
-        circle.layer.cornerRadius = size / 2;
-        circle.layer.borderWidth = 1.5;
-        circle.layer.borderColor = [UIColor whiteColor].CGColor;
-        
-        [vc.view addSubview:circle];
-        indicatorWin.hidden = NO;
-        [indicatorWin makeKeyAndVisible];
-        
-        [UIView animateWithDuration:0.35 animations:^{
-            circle.transform = CGAffineTransformMakeScale(1.4, 1.4);
-            circle.alpha = 0.0;
-        } completion:^(BOOL finished) {
-            indicatorWin.hidden = YES;
-        }];
-    });
-}
-
-// تنبيهات عائمة
-- (void)showToast:(NSString *)message {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!self.toastWindow) {
-            UIWindowScene *targetScene = nil;
-            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                    targetScene = (UIWindowScene *)scene;
-                    break;
-                }
-            }
-            self.toastWindow = targetScene ? [[UIWindow alloc] initWithWindowScene:targetScene] : [[UIWindow alloc] initWithFrame:CGRectMake(50, 200, 314, 50)];
-            self.toastWindow.windowLevel = UIWindowLevelStatusBar + 100000;
-            self.toastWindow.userInteractionEnabled = NO;
-            
-            UIViewController *toastVC = [[UIViewController alloc] init];
-            toastVC.view.backgroundColor = [UIColor clearColor];
-            self.toastWindow.rootViewController = toastVC;
-            
-            self.toastLabel = [[UILabel alloc] initWithFrame:CGRectMake(40, 100, 294, 45)];
-            self.toastLabel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
-            self.toastLabel.textColor = [UIColor cyanColor];
-            self.toastLabel.font = [UIFont boldSystemFontOfSize:13];
-            self.toastLabel.textAlignment = NSTextAlignmentCenter;
-            self.toastLabel.layer.cornerRadius = 10;
-            self.toastLabel.clipsToBounds = YES;
-            self.toastLabel.layer.borderWidth = 1.0;
-            self.toastLabel.layer.borderColor = [UIColor cyanColor].CGColor;
-            [toastVC.view addSubview:self.toastLabel];
-        }
-        
-        self.toastLabel.text = message;
-        self.toastWindow.hidden = NO;
-        [self.toastWindow makeKeyAndVisible];
-        
-        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideToast) object:nil];
-        [self performSelector:@selector(hideToast) withObject:nil afterDelay:2.0];
-    });
-}
-
-- (void)hideToast {
-    if (self.toastWindow) self.toastWindow.hidden = YES;
-}
-
-- (void)ensureUIVisible {
-    if (!self.floatingWindow) {
-        [self setupUI];
+    
+    if (targetScene) {
+        self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
     } else {
-        self.floatingWindow.hidden = NO;
-        [self.floatingWindow makeKeyAndVisible];
+        self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     }
+    
+    self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
+    self->floatingWindow.backgroundColor = [UIColor clearColor];
+    
+    UIViewController *emptyVC = [[UIViewController alloc] init];
+    emptyVC.view.backgroundColor = [UIColor clearColor];
+    self->floatingWindow.rootViewController = emptyVC;
+    
+    self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self->refreshButton setTitle:@"🔄 تطهير وتزوير الهويات (FID)" forState:UIControlStateNormal];
+    [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
+    self->refreshButton.layer.cornerRadius = 20;
+    self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
+    self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
+    self->refreshButton.layer.shadowOpacity = 0.4;
+    self->refreshButton.layer.shadowRadius = 4;
+    
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    CGFloat screenWidth = screenBounds.size.width;
+    self->refreshButton.frame = CGRectMake(screenWidth - 195, 60, 185, 40);
+    
+    [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+    
+    self->floatingWindow.targetButton = self->refreshButton;
+    [emptyVC.view addSubview:self->refreshButton];
+    [self->floatingWindow setHidden:NO];
 }
 
-// الواجهة العائمة
-- (void)setupUI {
-    if (self.floatingWindow) return;
+- (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
+    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم التطهير بنجاح" 
+                                                                           message:@"تم مسح البيانات وتوليد معرفات وهمية جديدة (IDFA, IDFV, FID) للجلسة القادمة." 
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
     
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindowScene *targetScene = nil;
-        CGRect screenBounds = [UIScreen mainScreen].bounds;
-        
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                targetScene = (UIWindowScene *)scene;
-                screenBounds = ((UIWindowScene *)scene).coordinateSpace.bounds;
-                break;
-            }
-        }
-        
-        CGFloat windowWidth = 220;
-        CGFloat windowHeight = 300;
-        CGFloat originX = screenBounds.size.width - windowWidth - 20;
-        CGFloat originY = screenBounds.size.height - windowHeight - 80;
-        
-        self.floatingWindow = targetScene ? [[UIWindow alloc] initWithWindowScene:targetScene] : [[UIWindow alloc] initWithFrame:CGRectMake(originX, originY, windowWidth, windowHeight)];
-        self.floatingWindow.frame = CGRectMake(originX, originY, windowWidth, windowHeight);
-        self.floatingWindow.windowLevel = UIWindowLevelStatusBar + 99999;
-        self.floatingWindow.userInteractionEnabled = YES;
-        
-        UIViewController *vc = [[UIViewController alloc] init];
-        vc.view.backgroundColor = [UIColor clearColor];
-        vc.view.userInteractionEnabled = YES;
-        self.floatingWindow.rootViewController = vc;
-        
-        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, windowWidth, windowHeight)];
-        container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.92];
-        container.layer.cornerRadius = 14;
-        container.layer.borderWidth = 1.5;
-        container.layer.borderColor = [UIColor cyanColor].CGColor;
-        container.clipsToBounds = YES;
-        container.userInteractionEnabled = YES;
-        
-        UIView *dragBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, windowWidth, 30)];
-        dragBar.backgroundColor = [[UIColor darkGrayColor] colorWithAlphaComponent:0.6];
-        dragBar.userInteractionEnabled = YES;
-        
-        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, windowWidth - 20, 30)];
-        titleLabel.text = @"≡ Simple Auto Clicker";
-        titleLabel.textColor = [UIColor cyanColor];
-        titleLabel.font = [UIFont boldSystemFontOfSize:11];
-        titleLabel.textAlignment = NSTextAlignmentCenter;
-        [dragBar addSubview:titleLabel];
-        
-        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
-        [dragBar addGestureRecognizer:pan];
-        
-        self->_recordButton = [self createButtonWithTitle:@"🔴 تسجيل" action:@selector(recordTapped:) color:[UIColor systemRedColor]];
-        self->_recordButton.frame = CGRectMake(10, 40, windowWidth - 20, 35);
-        
-        self->_stopButton = [self createButtonWithTitle:@"⏹️ إيقاف" action:@selector(stopTapped:) color:[UIColor systemOrangeColor]];
-        self->_stopButton.frame = CGRectMake(10, 80, windowWidth - 20, 35);
-        
-        self->_playButton = [self createButtonWithTitle:@"▶️ تشغيل وتكرار" action:@selector(playTapped:) color:[UIColor systemGreenColor]];
-        self->_playButton.frame = CGRectMake(10, 120, windowWidth - 20, 35);
-        
-        UIButton *saveBtn = [self createButtonWithTitle:@"💾 حفظ" action:@selector(saveTapped:) color:[UIColor systemBlueColor]];
-        saveBtn.frame = CGRectMake(10, 160, 95, 30);
-        
-        UIButton *clearBtn = [self createButtonWithTitle:@"🗑️ حذف" action:@selector(clearTapped:) color:[UIColor systemGrayColor]];
-        clearBtn.frame = CGRectMake(115, 160, 95, 30);
-        
-        UILabel *autoLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 200, 140, 30)];
-        autoLabel.text = @"تشغيل تلقائي دائم:";
-        autoLabel.textColor = [UIColor whiteColor];
-        autoLabel.font = [UIFont systemFontOfSize:12];
-        
-        self->_autoStartSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(windowWidth - 70, 200, 50, 30)];
-        [self->_autoStartSwitch setOn:self.persistentAutoStart];
-        [self->_autoStartSwitch addTarget:self action:@selector(autoSwitchChanged:) forControlEvents:UIControlEventValueChanged];
-        
-        UIButton *hideBtn = [self createButtonWithTitle:@"إخفاء الواجهة" action:@selector(hideTapped:) color:[UIColor darkGrayColor]];
-        hideBtn.frame = CGRectMake(10, 245, windowWidth - 20, 35);
-        hideBtn.titleLabel.font = [UIFont systemFontOfSize:11];
-        
-        [container addSubview:dragBar];
-        [container addSubview:self->_recordButton];
-        [container addSubview:self->_stopButton];
-        [container addSubview:self->_playButton];
-        [container addSubview:saveBtn];
-        [container addSubview:clearBtn];
-        [container addSubview:autoLabel];
-        [container addSubview:self->_autoStartSwitch];
-        [container addSubview:hideBtn];
-        
-        [vc.view addSubview:container];
-        [self.floatingWindow makeKeyAndVisible];
-        
-        if (self.persistentAutoStart && self.recordedEvents.count > 0) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self startPlaybackLoop];
-            });
-        }
+    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        exit(0);
+    }]];
+    
+    [rootVC presentViewController:successAlert animated:YES completion:nil];
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        exit(0);
     });
 }
 
-- (UIButton *)createButtonWithTitle:(NSString *)title action:(SEL)action color:(UIColor *)color {
-    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [btn setTitle:title forState:UIControlStateNormal];
-    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btn.backgroundColor = color;
-    btn.layer.cornerRadius = 6;
-    btn.userInteractionEnabled = YES;
-    [btn addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    return btn;
-}
-
-- (void)handlePan:(UIPanGestureRecognizer *)pan {
-    CGPoint translation = [pan translationInView:self.floatingWindow];
-    CGRect center = self.floatingWindow.frame;
-    center.origin.x += translation.x;
-    center.origin.y += translation.y;
-    self.floatingWindow.frame = center;
-    [pan setTranslation:CGPointZero inView:self.floatingWindow];
-}
-
-- (void)recordTapped:(id)sender { 
-    [self startRecording];
-    [self showToast:@"🔴 بدء تسجيل النقرات..."];
-}
-
-- (void)stopTapped:(id)sender { 
-    [self stopAll];
-    [self showToast:@"⏹️ تم إيقاف التسجيل والتشغيل"];
-}
-
-- (void)playTapped:(id)sender { 
-    if (self.recordedEvents.count == 0) {
-        [self showToast:@"⚠️ لا توجد حركات مسجلة للتشغيل!"];
-        return;
-    }
-    [self startPlaybackLoop];
-    [self showToast:@"▶️ بدء التشغيل والتفاعل مع الشاشة"];
-}
-
-- (void)saveTapped:(id)sender { 
-    [self saveMacroAndSettings];
-    [self showToast:@"💾 تم حفظ الحركات بنجاح"];
-}
-
-- (void)clearTapped:(id)sender { 
-    [self clearMacro];
-    [self showToast:@"🗑️ تم مسح وحذف التسجيلات"];
-}
-
-- (void)autoSwitchChanged:(UISwitch *)sender {
-    _persistentAutoStart = sender.isOn;
-    [self saveMacroAndSettings];
-    [self showToast:_persistentAutoStart ? @"⚙️ تشغيل تلقائي دائم: [مفعل]" : @"⚙️ تشغيل تلقائي دائم: [معطل]"];
-}
-
-- (void)hideTapped:(id)sender { 
-    self.floatingWindow.hidden = YES;
-    [self showToast:@"👁️ تم إخفاء الواجهة"];
-}
-
-- (void)startRecording {
-    [self stopAll];
-    _isRecording = YES;
-    [_recordedEvents removeAllObjects];
-    _lastEventTimestamp = CACurrentMediaTime();
-}
-
-- (void)stopAll {
-    _isRecording = NO;
-    _isPlaying = NO;
-}
-
-- (void)recordTouchAtPoint:(CGPoint)point phase:(NSInteger)phase {
-    if (!_isRecording) return;
-    if (phase == 0) [self showTouchIndicatorAtPoint:point];
+- (void)handleRefreshButtonTapped {
+    UIViewController *rootVC = self->floatingWindow.rootViewController;
     
-    NSTimeInterval now = CACurrentMediaTime();
-    NSTimeInterval delta = now - _lastEventTimestamp;
-    _lastEventTimestamp = now;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتوليد هويات وهمية" 
+                                                               message:@"جاري مسح كل الملفات وتوليد معرفات وهمية جديدة (شاملة الـ FID)..." 
+                                                        preferredStyle:UIAlertControllerStyleAlert];
     
-    RecordedEvent *ev = [[RecordedEvent alloc] init];
-    ev.point = point;
-    ev.phase = phase;
-    ev.timeOffset = delta;
-    [_recordedEvents addObject:ev];
-}
-
-// ==========================================
-// 3. محرك التنفيذ الآمن المستوحى من مشاريع السورس المفتوح (بدون كراش)
-// ==========================================
-- (void)executeTouchAtPoint:(CGPoint)point phase:(NSInteger)phase {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *keyWindow = nil;
-        for (UIWindow *w in [UIApplication sharedApplication].windows) {
-            if (w.isKeyWindow && ![w isEqual:self.floatingWindow]) {
-                keyWindow = w;
-                break;
-            }
-        }
-        if (!keyWindow) keyWindow = [[UIApplication sharedApplication].windows firstObject];
-        if (!keyWindow) return;
-
-        if (phase == 0) {
-            [self showTouchIndicatorAtPoint:point];
-        }
-
-        // إيجاد العنصر الواقع تحت النقطة وتفعيل الضغطة عليه بشكل نظيف ومستقر
-        UIView *hitView = [keyWindow hitTest:point withEvent:nil];
-        if (hitView) {
-            @try {
-                if ([hitView isKindOfClass:[UIButton class]]) {
-                    [(UIButton *)hitView sendActionsForControlEvents:UIControlEventTouchUpInside];
-                } else if ([hitView isKindOfClass:[UIControl class]]) {
-                    [(UIControl *)hitView sendActionsForControlEvents:UIControlEventTouchUpInside];
-                } else {
-                    // محاكاة إيماءة الضغط على العناصر غير الزرية بأمان
-                    for (UIGestureRecognizer *recognizer in hitView.gestureRecognizers) {
-                        if ([recognizer isKindOfClass:[UITapGestureRecognizer class]]) {
-                            [recognizer.target performSelector:recognizer.action withObject:recognizer afterDelay:0.0];
-                        }
-                    }
+    __weak typeof(self) weakSelf = self;
+    [rootVC presentViewController:alert animated:YES completion:^{
+        executeFullEnvironmentRefresh();
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:^{
+                if (weakSelf) {
+                    [weakSelf showSuccessAlertFromRoot:rootVC];
                 }
-            } @catch (NSException *exception) {
-                // صمام أمان يمنع الانهيار نهائياً
-            }
-        }
-    });
-}
-
-- (void)startPlaybackLoop {
-    if (_isPlaying || _recordedEvents.count == 0) return;
-    _isPlaying = YES;
-    
-    dispatch_async(_macroQueue, ^{
-        while (self.isPlaying) {
-            for (RecordedEvent *ev in self.recordedEvents) {
-                if (!self.isPlaying) break;
-                
-                NSTimeInterval remaining = ev.timeOffset;
-                while (remaining > 0 && self.isPlaying) {
-                    NSTimeInterval slice = (remaining > 0.02) ? 0.02 : remaining;
-                    usleep((useconds_t)(slice * 1000000.0));
-                    remaining -= slice;
-                }
-                
-                if (!self.isPlaying) break;
-                
-                [self executeTouchAtPoint:ev.point phase:ev.phase];
-            }
-            usleep(20000);
-        }
-    });
+            }];
+        });
+    }];
 }
 
 @end
 
-// ==========================================
-// 4. الخطافات (Hooks) الأساسية للنافذة والتطبيق
-// ==========================================
-%hook UIWindow
-- (void)sendEvent:(UIEvent *)event {
-    UIWindow *floatingWin = [MacroManager sharedInstance].floatingWindow;
-    if (floatingWin && !floatingWin.hidden) {
-        for (UITouch *touch in event.allTouches) {
-            if ([touch.window isEqual:floatingWin]) {
-                %orig;
-                return;
-            }
-        }
-    }
-    
-    %orig;
-    if (event.type == UIEventTypeTouches) {
-        MacroManager *manager = [MacroManager sharedInstance];
-        if (manager.isRecording) {
-            UITouch *touch = [[event.allTouches allObjects] firstObject];
-            if (touch && ![[touch window] isEqual:floatingWin]) {
-                CGPoint pt = [touch locationInView:self];
-                NSInteger phase = 1;
-                if (touch.phase == UITouchPhaseBegan) phase = 0;
-                else if (touch.phase == UITouchPhaseEnded || touch.phase == UITouchPhaseCancelled) phase = 2;
-                
-                [manager recordTouchAtPoint:pt phase:phase];
-            }
-        }
-    }
-}
-%end
-
-%hook UIApplication
-- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    BOOL orig = %orig;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[MacroManager sharedInstance] setupUI];
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق
+%ctor {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[FloatingButtonManager sharedInstance] showFloatingButton];
     });
-    return orig;
+}
+
+// هوكات تزويد التطبيق بالمعرفات الوهمية مباشرة دون حفظها
+%hook ATTrackingManager
++ (NSUInteger)trackingAuthorizationStatus {
+    return 2;
 }
 %end
 
-%hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    [[MacroManager sharedInstance] ensureUIVisible];
+%hook UIDevice
+- (NSUUID *)identifierForVendor {
+    if (runtimeFreshIDFV) {
+        return [[NSUUID alloc] initWithUUIDString:runtimeFreshIDFV];
+    }
+    return %orig;
 }
+%end
+
+%hook ASIdentifierManager
+- (NSUUID *)advertisingIdentifier {
+    if (runtimeFreshIDFA) {
+        return [[NSUUID alloc] initWithUUIDString:runtimeFreshIDFA];
+    }
+    return %orig;
+}
+- (BOOL)isAdvertisingTrackingEnabled {
+    return NO;
+}
+%end
+
+// هوك اعتراض ومعالجة معرفات الـ Firebase Installations (FID) في حال استخدام التطبيق لها
+%hook FIRInstallations
+- (void)installationIDWithCompletion:(void (^)(NSString * _Nullable, NSError * _Nullable))completion {
+    if (runtimeFreshFID && completion) {
+        completion(runtimeFreshFID, nil);
+        return;
+    }
+    %orig;
+}
+%end
+
+%hook NSMutableURLRequest
+- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
+    if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
+        value = randomEuropeanIP();
+    }
+    %orig(value, field);
+}
+%end
+
+%hook ActivatorAdService
+
+- (BOOL)isReady {
+    return YES;
+}
+
+- (BOOL)isAdReady {
+    return YES;
+}
+
+- (BOOL)canShowAd {
+    return YES;
+}
+
+- (BOOL)hasAdLoaded {
+    return YES;
+}
+
+- (void)loadAd {
+    %orig;
+}
+
+- (void)showRewardAd {
+    @try {
+        %orig;
+    } @catch (NSException *exception) {
+        NSLog(@">>> [Dynamic-Refresh] Exception in showRewardAd: %@", exception.reason);
+    }
+}
+
+- (void)presentAdFromViewController:(UIViewController *)viewController {
+    @try {
+        %orig;
+    } @catch (NSException *exception) {
+        NSLog(@">>> [Dynamic-Refresh] Exception caught in presentAdFromViewController: %@", exception.reason);
+    }
+}
+
+- (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
+    id targetSelf = self;
+    if ([targetSelf respondsToSelector:@selector(loadAd)]) {
+        [targetSelf loadAd];
+    }
+}
+
 %end
