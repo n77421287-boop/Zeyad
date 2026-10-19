@@ -9,7 +9,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = GhostIdentity
 GhostIdentity_FILES = Tweak.xm
 GhostIdentity_CFLAGS = -fobjc-arc -O2 -fvisibility=hidden
-GhostIdentity_FRAMEWORKS = Foundation UIKit AdSupport CFNetwork Security SystemConfiguration
+GhostIdentity_FRAMEWORKS = Foundation UIKit AdSupport IOKit CFNetwork Security SystemConfiguration
 GhostIdentity_LDFLAGS = -lsubstrate
 
 include $(THEOS_MAKE_PATH)/tweak.mk
