@@ -1,397 +1,375 @@
-#import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <AdSupport/AdSupport.h>
-#import <AppTrackingTransparency/AppTrackingTransparency.h>
-#import <Security/Security.h>
-#import <objc/runtime.h>
+#import <Foundation/Foundation.h>
+#include <mach/mach_time.h>
 
-@interface ActivatorAdService : NSObject
-- (void)loadAd;
-- (BOOL)isReady;
-- (BOOL)isAdReady;
-- (BOOL)canShowAd;
-- (BOOL)hasAdLoaded;
-- (void)showRewardAd;
-- (void)presentAdFromViewController:(UIViewController *)viewController;
+// ==========================================
+// 1. تعريفات واجهات ومجموعات IOHIDEvent الخاصة
+// ==========================================
+typedef struct __IOHIDEvent *IOHIDEventRef;
+typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
+
+extern "C" {
+    IOHIDEventSystemClientRef IOHIDEventSystemClientCreate(CFAllocatorRef allocator);
+    void IOHIDEventSystemClientDispatchEvent(IOHIDEventSystemClientRef client, IOHIDEventRef event);
+    
+    IOHIDEventRef IOHIDEventCreateDigitizerFingerEvent(
+        CFAllocatorRef allocator,
+        uint64_t timestamp,
+        uint32_t fingerID,
+        uint32_t phase,
+        CGFloat x, CGFloat y, CGFloat z,
+        CGFloat pressure, CGFloat twist,
+        boolean_t range, boolean_t touch,
+        uint32_t flags
+    );
+}
+
+typedef NS_ENUM(uint32_t, IOHIDDigitizerEventPhase) {
+    kIOHIDDigitizerEventPhaseUndefined = 0,
+    kIOHIDDigitizerEventPhaseRanges    = 1,
+    kIOHIDDigitizerEventPhaseTouch     = 2,
+    kIOHIDDigitizerEventPhaseStationary= 4,
+    kIOHIDDigitizerEventPhaseDown      = 5,
+    kIOHIDDigitizerEventPhaseUp        = 6,
+    kIOHIDDigitizerEventPhaseCancel    = 7
+};
+
+// ==========================================
+// 2. بنية البيانات للحدث المسجل
+// ==========================================
+@interface RecordedEvent : NSObject <NSCoding>
+@property (nonatomic, assign) CGPoint point;
+@property (nonatomic, assign) NSInteger phase;
+@property (nonatomic, assign) NSTimeInterval timeOffset;
 @end
 
-extern void executeFullEnvironmentRefresh(void);
-
-// 1. حذف جميع عناصر الـ Keychain بالكامل ديناميكياً وجذرياً ثم إضافة التوكن الجديد
-static void clearAllKeychainAndAddNewItem() {
-    NSArray *secClasses = @[
-        (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecClassInternetPassword,
-        (__bridge id)kSecClassCertificate,
-        (__bridge id)kSecClassKey,
-        (__bridge id)kSecClassIdentity
-    ];
-    
-    NSString *primaryAccessGroup = @"3J96GNXKKU.*";
-    
-    for (id secClass in secClasses) {
-        NSDictionary *generalQuery = @{
-            (__bridge id)kSecClass: secClass
-        };
-        SecItemDelete((__bridge CFDictionaryRef)generalQuery);
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            NSDictionary *groupQuery = @{
-                (__bridge id)kSecClass: secClass,
-                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
-            };
-            SecItemDelete((__bridge CFDictionaryRef)groupQuery);
-        }
-        
-        NSMutableDictionary *spec = [NSMutableDictionary dictionaryWithDictionary:@{
-            (__bridge id)kSecClass: secClass,
-            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
-            (__bridge id)kSecReturnPersistentRef: @YES
-        }];
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-        }
-        
-        CFArrayRef result = NULL;
-        if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
-            NSArray *items = (__bridge NSArray *)result;
-            for (id itemRef in items) {
-                NSDictionary *refQuery = @{
-                    (__bridge id)kSecValueRef: itemRef
-                };
-                SecItemDelete((__bridge CFDictionaryRef)refQuery);
-            }
-            CFRelease(result);
-        }
+@implementation RecordedEvent
+- (void)encodeWithCoder:(NSCoder *)coder {
+    [coder encodeCGPoint:_point forKey:@"point"];
+    [coder encodeInteger:_phase forKey:@"phase"];
+    [coder encodeDouble:_timeOffset forKey:@"timeOffset"];
+}
+- (id)initWithCoder:(NSCoder *)coder {
+    self = [super init];
+    if (self) {
+        _point = [coder decodeCGPointForKey:@"point"];
+        _phase = [coder decodeIntegerForKey:@"phase"];
+        _timeOffset = [coder decodeDoubleForKey:@"timeOffset"];
     }
-    
-    NSString *serviceName = @"app.getsmscode";
-    NSString *accountName = @"tokenKey";
-    NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
-    
-    NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
-    
-    NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: serviceName,
-        (__bridge id)kSecAttrAccount: accountName,
-        (__bridge id)kSecValueData: tokenData
-    }];
-    
-    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-        addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-    }
-    
-    SecItemDelete((__bridge CFDictionaryRef)addQuery);
-    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-    
-    if (addStatus == errSecSuccess) {
-        NSLog(@">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
-    } else {
-        [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
-        SecItemDelete((__bridge CFDictionaryRef)addQuery);
-        OSStatus fallbackStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-        if (fallbackStatus == errSecSuccess) {
-            NSLog(@">>> [Dynamic-Refresh] Keychain wiped & tokenKey added via fallback mode.");
-        } else {
-            NSLog(@">>> [Dynamic-Refresh] Failed to add tokenKey, error code: %d", (int)fallbackStatus);
-        }
-    }
-}
-
-static NSString *randomNewIDFA() {
-    return [[NSUUID UUID] UUIDString];
-}
-
-static NSString *randomEuropeanIP() {
-    return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
-}
-
-static double randomInactivitySeconds() {
-    return (double)(864000 + arc4random_uniform(4320000));
-}
-
-static NSString *generateFreshTimestamp() {
-    NSDate *now = [NSDate date];
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSS'+0300'"];
-    return [formatter stringFromDate:now];
-}
-
-// 2. دالة تنظيف شاملة وجذرية لكل ملفات ومجلدات و بيانات التطبيق بنسبة 100%
-void executeFullEnvironmentRefresh() {
-    @autoreleasepool {
-        clearAllKeychainAndAddNewItem();
-
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSString *homeDir = NSHomeDirectory();
-        
-        NSError *error = nil;
-        NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
-        for (NSString *item in homeContents) {
-            NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
-            [fileManager removeItemAtPath:fullPath error:&error];
-        }
-        
-        NSArray *subDirs = @[@"Documents", @"Library/Caches", @"Library/Application Support", @"Library/Preferences", @"Library/Cookies", @"tmp"];
-        for (NSString *subDir in subDirs) {
-            NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
-            if ([fileManager fileExistsAtPath:targetPath]) {
-                NSArray *contents = [fileManager contentsOfDirectoryAtPath:targetPath error:nil];
-                for (NSString *file in contents) {
-                    NSString *filePath = [targetPath stringByAppendingPathComponent:file];
-                    [fileManager removeItemAtPath:filePath error:nil];
-                }
-            }
-        }
-
-        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-        if (bundleIdentifier) {
-            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-        }
-        
-        NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
-        if ([fileManager fileExistsAtPath:groupDirBase]) {
-            NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
-            for (NSString *groupFolder in groupFolders) {
-                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
-                [fileManager removeItemAtPath:groupPath error:nil];
-            }
-        }
-
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        NSString *freshID = randomNewIDFA();
-        NSString *freshDate = generateFreshTimestamp();
-        double dynamicInactivityTime = randomInactivitySeconds();
-        
-        [defaults setObject:freshID forKey:@"device.id.key"];
-        [defaults setObject:freshID forKey:@"com.google.sso.GeneratedDeviceIdentifier"];
-        [defaults setObject:freshID forKey:@"AppsFlyerUserId"];
-        [defaults setObject:freshID forKey:@"com.firebase.installations.app_id_to_fiid_enforcement"];
-        
-        [defaults setInteger:2 forKey:@"ATT_Tracking_Status"];
-        [defaults setInteger:0 forKey:@"ump_status"];
-        [defaults setInteger:0 forKey:@"IABTCF_gdprApplies"];
-        
-        [defaults setInteger:1 forKey:@"AppsFlyerRealLaunchCounter"];
-        [defaults setInteger:0 forKey:@"AppsFlyerReinstallCounter"];
-        [defaults setInteger:1 forKey:@"AppsFlyerLaunchKey"];
-        
-        [defaults setObject:freshDate forKey:@"AppsFlyerInstallDate"];
-        [defaults setObject:freshDate forKey:@"AppsFlyerFirstLaunchDate"];
-        [defaults setObject:freshDate forKey:@"AppsFlyerInstallTimestamp"];
-        
-        [defaults setDouble:0.0 forKey:@"AppsFlyerLastSessionDuration"];
-        [defaults setDouble:dynamicInactivityTime forKey:@"AppsFlyerTimePassedSincePrevLaunch"];
-        [defaults setDouble:dynamicInactivityTime forKey:@"time_passed_since_last_session"];
-        [defaults setDouble:dynamicInactivityTime forKey:@"last_activity_interval"];
-        
-        [defaults synchronize];
-        
-        NSLog(@">>> [Manual-Refresh] COMPLETE AND TOTAL WIPE OF ALL APP DATA & FILES SUCCESSFUL: %@", freshID);
-    }
-}
-
-// 3. نافذة مخصصة للزر العائم تمرر اللمسات للشاشة خلفها وتستجيب للزر فقط
-@interface FloatingButtonWindow : UIWindow
-@property (nonatomic, strong) UIButton *targetButton;
-@end
-
-@implementation FloatingButtonWindow
-- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!self.targetButton) return NO;
-    CGPoint buttonPoint = [self convertPoint:point toView:self.targetButton];
-    return [self.targetButton pointInside:buttonPoint withEvent:event];
+    return self;
 }
 @end
 
-@interface FloatingButtonManager : NSObject
+// ==========================================
+// 3. إدارة التسجيل والتشغيل والواجهة عبر الملفات
+// ==========================================
+@interface MacroManager : NSObject
+@property (nonatomic, strong) UIWindow *floatingWindow;
+@property (nonatomic, strong) UIButton *recordButton;
+@property (nonatomic, strong) UIButton *stopButton;
+@property (nonatomic, strong) UIButton *playButton;
+@property (nonatomic, strong) UISwitch *autoStartSwitch;
+
+@property (nonatomic, assign) BOOL isRecording;
+@property (nonatomic, assign) BOOL isPlaying;
+@property (nonatomic, assign) BOOL persistentAutoStart;
+
+@property (nonatomic, strong) NSMutableArray<RecordedEvent *> *recordedEvents;
+@property (nonatomic, assign) NSTimeInterval lastEventTimestamp;
+@property (nonatomic, strong) dispatch_queue_t macroQueue;
+@property (nonatomic, assign) IOHIDEventSystemClientRef hidClient;
+
 + (instancetype)sharedInstance;
-- (void)showFloatingButton;
+- (void)setupUI;
+- (void)startRecording;
+- (void)stopAll;
+- (void)saveMacroAndSettings;
+- (void)clearMacro;
+- (void)startPlaybackLoop;
 @end
 
-@implementation FloatingButtonManager {
-    FloatingButtonWindow *floatingWindow;
-    UIButton *refreshButton;
-}
+@implementation MacroManager
 
 + (instancetype)sharedInstance {
-    static FloatingButtonManager *sharedInstance = nil;
+    static MacroManager *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sharedInstance = [[FloatingButtonManager alloc] init];
+        sharedInstance = [[MacroManager alloc] init];
     });
     return sharedInstance;
 }
 
-- (void)showFloatingButton {
-    if (self->floatingWindow) return;
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _recordedEvents = [NSMutableArray array];
+        _macroQueue = dispatch_queue_create("com.macro.engine.queue", DISPATCH_QUEUE_SERIAL);
+        _hidClient = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+        
+        // قراءة الإعدادات والتسجيل من الملفات حصرياً
+        [self loadDataFromFile];
+    }
+    return self;
+}
+
+// مسار ملف الحفظ الموحد في مجلد المستندات
+- (NSString *)filePath {
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *documentsDirectory = [paths objectAtIndex:0];
+    return [documentsDirectory stringByAppendingPathComponent:@"automacro_config.plist"];
+}
+
+// حفظ الأحداث وحالة التشغيل التلقائي معاً في ملف واحد
+- (void)saveMacroAndSettings {
+    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
     
-    UIWindowScene *targetScene = nil;
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-            targetScene = (UIWindowScene *)scene;
+    NSData *eventsData = [NSKeyedArchiver archivedDataWithRootObject:_recordedEvents];
+    [dict setObject:eventsData forKey:@"events"];
+    [dict setObject:@(_persistentAutoStart) forKey:@"autoStart"];
+    
+    [dict writeToFile:[self filePath] atomically:YES];
+}
+
+// تحميل البيانات والإعدادات من الملف
+- (void)loadDataFromFile {
+    NSString *path = [self filePath];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (dict) {
+            NSData *eventsData = [dict objectForKey:@"events"];
+            if (eventsData) {
+                NSArray *loaded = [NSKeyedUnarchiver unarchiveObjectWithData:eventsData];
+                if (loaded) {
+                    [_recordedEvents setArray:loaded];
+                }
+            }
+            NSNumber *autoStartNum = [dict objectForKey:@"autoStart"];
+            if (autoStartNum) {
+                _persistentAutoStart = [autoStartNum boolValue];
+            }
+        }
+    }
+}
+
+- (void)clearMacro {
+    [_recordedEvents removeAllObjects];
+    _persistentAutoStart = NO;
+    [[NSFileManager defaultManager] removeItemAtPath:[self filePath] error:nil];
+}
+
+// بناء واجهة المستخدم العائمة
+- (void)setupUI {
+    if (self.floatingWindow) return;
+    
+    UIWindowScene *scene = nil;
+    for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+        if ([s isKindOfClass:[UIWindowScene class]]) {
+            scene = (UIWindowScene *)s;
             break;
         }
     }
     
-    if (targetScene) {
-        self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
+    if (scene) {
+        self.floatingWindow = [[UIWindow alloc] initWithWindowScene:scene];
     } else {
-        self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        self.floatingWindow = [[UIWindow alloc] initWithFrame:CGRectMake(20, 100, 220, 270)];
     }
     
-    self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
-    self->floatingWindow.backgroundColor = [UIColor clearColor];
+    self.floatingWindow.frame = CGRectMake(20, 100, 220, 270);
+    self.floatingWindow.windowLevel = UIWindowLevelAlert + 9999;
+    self.floatingWindow.hidden = NO;
     
-    UIViewController *emptyVC = [[UIViewController alloc] init];
-    emptyVC.view.backgroundColor = [UIColor clearColor];
-    self->floatingWindow.rootViewController = emptyVC;
+    UIView *container = [[UIView alloc] initWithFrame:self.floatingWindow.bounds];
+    container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.75];
+    container.layer.cornerRadius = 14;
+    container.layer.borderWidth = 1.5;
+    container.layer.borderColor = [UIColor cyanColor].CGColor;
     
-    self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
-    [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
-    self->refreshButton.layer.cornerRadius = 20;
-    self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
-    self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
-    self->refreshButton.layer.shadowOpacity = 0.4;
-    self->refreshButton.layer.shadowRadius = 4;
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
+    [container addGestureRecognizer:pan];
     
-    CGRect screenBounds = [UIScreen mainScreen].bounds;
-    CGFloat screenWidth = screenBounds.size.width;
-    self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
+    _recordButton = [self createButtonWithTitle:@"🔴 تسجيل" action:@selector(recordTapped:) color:[UIColor systemRedColor]];
+    _recordButton.frame = CGRectMake(10, 10, 200, 35);
     
-    [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+    _stopButton = [self createButtonWithTitle:@"⏹️ إيقاف" action:@selector(stopTapped:) color:[UIColor systemOrangeColor]];
+    _stopButton.frame = CGRectMake(10, 50, 200, 35);
     
-    self->floatingWindow.targetButton = self->refreshButton;
-    [emptyVC.view addSubview:self->refreshButton];
-    [self->floatingWindow setHidden:NO];
-}
-
-- (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
-    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                           message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
+    _playButton = [self createButtonWithTitle:@"▶️ تشغيل وتكرار" action:@selector(playTapped:) color:[UIColor systemGreenColor]];
+    _playButton.frame = CGRectMake(10, 90, 200, 35);
     
-    // إضافة زر "حسناً" الذي يقوم بالخروج أيضاً عند الضغط عليه
-    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        exit(0);
-    }]];
+    UIButton *saveBtn = [self createButtonWithTitle:@"💾 حفظ الحركات" action:@selector(saveTapped:) color:[UIColor systemBlueColor]];
+    saveBtn.frame = CGRectMake(10, 130, 95, 30);
     
-    [rootVC presentViewController:successAlert animated:YES completion:nil];
+    UIButton *clearBtn = [self createButtonWithTitle:@"🗑️ حذف" action:@selector(clearTapped:) color:[UIColor systemGrayColor]];
+    clearBtn.frame = CGRectMake(115, 130, 95, 30);
     
-    // الخروج التلقائي بعد ظهور زر "حسناً" ورسالة النجاح بثانية واحدة (1.0 ثانية)
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        exit(0);
-    });
-}
-
-- (void)handleRefreshButtonTapped {
-    UIViewController *rootVC = self->floatingWindow.rootViewController;
+    UILabel *autoLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 170, 140, 30)];
+    autoLabel.text = @"تشغيل تلقائي دائم:";
+    autoLabel.textColor = [UIColor whiteColor];
+    autoLabel.font = [UIFont systemFontOfSize:12];
     
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
-                                                               message:@"جاري مسح كافة ملفات، بيانات وداتا التطبيق من الجذور..." 
-                                                        preferredStyle:UIAlertControllerStyleAlert];
+    _autoStartSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(160, 170, 50, 30)];
+    [_autoStartSwitch setOn:_persistentAutoStart];
+    [_autoStartSwitch addTarget:self action:@selector(autoSwitchChanged:) forControlEvents:UIControlEventValueChanged];
     
-    __weak typeof(self) weakSelf = self;
-    [rootVC presentViewController:alert animated:YES completion:^{
-        executeFullEnvironmentRefresh();
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                if (weakSelf) {
-                    [weakSelf showSuccessAlertFromRoot:rootVC];
-                }
-            }];
+    UIButton *hideBtn = [self createButtonWithTitle:@"إخفاء الواجهة" action:@selector(hideTapped:) color:[UIColor darkGrayColor]];
+    hideBtn.frame = CGRectMake(10, 215, 200, 30);
+    hideBtn.titleLabel.font = [UIFont systemFontOfSize:10];
+    
+    [container addSubview:_recordButton];
+    [container addSubview:_stopButton];
+    [container addSubview:_playButton];
+    [container addSubview:saveBtn];
+    [container addSubview:clearBtn];
+    [container addSubview:autoLabel];
+    [container addSubview:_autoStartSwitch];
+    [container addSubview:hideBtn];
+    
+    [self.floatingWindow addSubview:container];
+    
+    // التشغيل التلقائي عند الإقلاع اعتماداً على ما تم قراءته من الملف
+    if (_persistentAutoStart && _recordedEvents.count > 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self startPlaybackLoop];
         });
-    }];
+    }
+}
+
+- (UIButton *)createButtonWithTitle:(NSString *)title action:(SEL)action color:(UIColor *)color {
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [btn setTitle:title forState:UIControlStateNormal];
+    [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btn.backgroundColor = color;
+    btn.layer.cornerRadius = 6;
+    [btn addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return btn;
+}
+
+- (void)handlePan:(UIPanGestureRecognizer *)pan {
+    CGPoint translation = [pan translationInView:self.floatingWindow];
+    CGRect center = self.floatingWindow.frame;
+    center.origin.x += translation.x;
+    center.origin.y += translation.y;
+    self.floatingWindow.frame = center;
+    [pan setTranslation:CGPointZero inView:self.floatingWindow];
+}
+
+#pragma mark - إجراءات الأزرار
+- (void)recordTapped:(id)sender { [self startRecording]; }
+- (void)stopTapped:(id)sender { [self stopAll]; }
+- (void)playTapped:(id)sender { [self startPlaybackLoop]; }
+- (void)saveTapped:(id)sender { [self saveMacroAndSettings]; }
+- (void)clearTapped:(id)sender { [self clearMacro]; }
+
+- (void)autoSwitchChanged:(UISwitch *)sender {
+    _persistentAutoStart = sender.isOn;
+    // حفظ التغيير فوراً في الملف
+    [self saveMacroAndSettings];
+}
+
+- (void)hideTapped:(id)sender { self.floatingWindow.hidden = YES; }
+
+- (void)startRecording {
+    [self stopAll];
+    _isRecording = YES;
+    [_recordedEvents removeAllObjects];
+    _lastEventTimestamp = CACurrentMediaTime();
+}
+
+- (void)stopAll {
+    _isRecording = NO;
+    _isPlaying = false;
+}
+
+- (void)recordTouchAtPoint:(CGPoint)point phase:(NSInteger)phase {
+    if (!_isRecording) return;
+    
+    NSTimeInterval now = CACurrentMediaTime();
+    NSTimeInterval delta = now - _lastEventTimestamp;
+    _lastEventTimestamp = now;
+    
+    RecordedEvent *ev = [[RecordedEvent alloc] init];
+    ev.point = point;
+    ev.phase = phase;
+    ev.timeOffset = delta;
+    
+    [_recordedEvents addObject:ev];
+}
+
+#pragma mark - محاكاة اللمس
+- (void)injectTouchAtPoint:(CGPoint)point phase:(IOHIDDigitizerEventPhase)phase {
+    if (!_hidClient) return;
+    
+    uint64_t machTime = mach_absolute_time();
+    IOHIDEventRef event = IOHIDEventCreateDigitizerFingerEvent(
+        kCFAllocatorDefault, machTime, 1, phase,
+        point.x, point.y, 0, 1.0, 0, true, true, 0
+    );
+    
+    if (event) {
+        IOHIDEventSystemClientDispatchEvent(_hidClient, event);
+        CFRelease(event);
+    }
+}
+
+- (void)startPlaybackLoop {
+    if (_isPlaying || _recordedEvents.count == 0) return;
+    _isPlaying = YES;
+    
+    dispatch_async(_macroQueue, ^{
+        while (self.isPlaying) {
+            for (RecordedEvent *ev in self.recordedEvents) {
+                if (!self.isPlaying) break;
+                
+                if (ev.timeOffset > 0 && ev.timeOffset < 5.0) {
+                    usleep((useconds_t)(ev.timeOffset * 1000000.0));
+                }
+                
+                IOHIDDigitizerEventPhase hidPhase = kIOHIDDigitizerEventPhaseTouch;
+                if (ev.phase == 0) hidPhase = kIOHIDDigitizerEventPhaseDown;
+                else if (ev.phase == 1) hidPhase = kIOHIDDigitizerEventPhaseTouch;
+                else if (ev.phase == 2) hidPhase = kIOHIDDigitizerEventPhaseUp;
+                
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self injectTouchAtPoint:ev.point phase:hidPhase];
+                });
+            }
+            usleep(50000);
+        }
+    });
 }
 
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق بالطريقة المتوافقة تماماً
-%ctor {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[FloatingButtonManager sharedInstance] showFloatingButton];
-    });
-}
-
-// بقية الهوكات والتعديلات
-%hook ATTrackingManager
-+ (NSUInteger)trackingAuthorizationStatus {
-    return 2;
-}
-%end
-
-%hook UIDevice
-- (NSUUID *)identifierForVendor {
-    return [NSUUID UUID];
-}
-%end
-
-%hook ASIdentifierManager
-- (NSUUID *)advertisingIdentifier {
-    return [NSUUID UUID];
-}
-- (BOOL)isAdvertisingTrackingEnabled {
-    return NO;
-}
-%end
-
-%hook NSMutableURLRequest
-- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
-    if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
-        value = randomEuropeanIP();
-    }
-    %orig(value, field);
-}
-%end
-
-%hook ActivatorAdService
-
-- (BOOL)isReady {
-    return YES;
-}
-
-- (BOOL)isAdReady {
-    return YES;
-}
-
-- (BOOL)canShowAd {
-    return YES;
-}
-
-- (BOOL)hasAdLoaded {
-    return YES;
-}
-
-- (void)loadAd {
+// ==========================================
+// 4. الخطافات (Hooks)
+// ==========================================
+%hook UIWindow
+- (void)sendEvent:(UIEvent *)event {
     %orig;
-}
-
-- (void)showRewardAd {
-    @try {
-        %orig;
-    } @catch (NSException *exception) {
-        NSLog(@">>> [Dynamic-Refresh] Exception in showRewardAd: %@", exception.reason);
+    if (event.type == UIEventTypeTouches) {
+        MacroManager *manager = [MacroManager sharedInstance];
+        if (manager.isRecording) {
+            UITouch *touch = [[event.allTouches allObjects] firstObject];
+            if (touch) {
+                CGPoint pt = [touch locationInView:self];
+                NSInteger phase = 1;
+                if (touch.phase == UITouchPhaseBegan) phase = 0;
+                else if (touch.phase == UITouchPhaseEnded || touch.phase == UITouchPhaseCancelled) phase = 2;
+                
+                [manager recordTouchAtPoint:pt phase:phase];
+            }
+        }
     }
 }
+%end
 
-- (void)presentAdFromViewController:(UIViewController *)viewController {
-    @try {
-        %orig;
-    } @catch (NSException *exception) {
-        NSLog(@">>> [Dynamic-Refresh] Exception caught in presentAdFromViewController: %@", exception.reason);
-    }
+%hook UIApplication
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    BOOL orig = %orig;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[MacroManager sharedInstance] setupUI];
+    });
+    return orig;
 }
-
-- (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
-    id targetSelf = self;
-    if ([targetSelf respondsToSelector:@selector(loadAd)]) {
-        [targetSelf loadAd];
-    }
-}
-
 %end
