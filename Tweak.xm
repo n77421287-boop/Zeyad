@@ -1,439 +1,802 @@
+// ============================================================================
+//  NetworkSniffer.m — Passive Overlay Sniffer (no re-send, full coverage)
+// ============================================================================
+
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <AdSupport/AdSupport.h>
-#import <AppTrackingTransparency/AppTrackingTransparency.h>
-#import <Security/Security.h>
 #import <objc/runtime.h>
+#import <zlib.h>
 
-@interface ActivatorAdService : NSObject
-- (void)loadAd;
-- (BOOL)isReady;
-- (BOOL)isAdReady;
-- (BOOL)canShowAd;
-- (BOOL)hasAdLoaded;
-- (void)showRewardAd;
-- (void)presentAdFromViewController:(UIViewController *)viewController;
+// ============================================================================
+// SECTION 1 — Logging
+// ============================================================================
+
+static void snf_log(NSString *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
+    va_end(args);
+    NSLog(@"[Sniffer] %@", msg);
+}
+
+static void snf_safe(NSString *name, dispatch_block_t block) {
+    @try { block(); }
+    @catch (NSException *e) { snf_log(@"FAIL %@ : %@ - %@", name, e.name, e.reason); }
+    @catch (...) { snf_log(@"FAIL %@ : C++ exception", name); }
+}
+
+// ============================================================================
+// SECTION 2 — Request model
+// ============================================================================
+
+@interface SnifferRequest : NSObject
+@property (nonatomic, copy)   NSString *url;
+@property (nonatomic, copy)   NSString *method;
+@property (nonatomic, strong) NSDictionary *requestHeaders;
+@property (nonatomic, strong) NSData *requestBody;
+@property (nonatomic, strong) NSDictionary *responseHeaders;
+@property (nonatomic, assign) NSInteger statusCode;
+@property (nonatomic, strong) NSData *responseBody;
+@property (nonatomic, strong) NSError *error;
+@property (nonatomic, strong) NSDate *timestamp;
 @end
 
-extern void executeFullEnvironmentRefresh(void);
+@implementation SnifferRequest
+@end
 
-static NSString *getPersistentIDFA() {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    NSString *savedIDFA = [defaults stringForKey:@"Persistent_Custom_IDFA"];
-    if (!savedIDFA) {
-        savedIDFA = [[NSUUID UUID] UUIDString];
-        [defaults setObject:savedIDFA forKey:@"Persistent_Custom_IDFA"];
-        [defaults synchronize];
-    }
-    return savedIDFA;
+@interface SnifferTaskBuffer : NSObject
+@property (nonatomic, strong) NSMutableData *data;
+@property (nonatomic, strong) NSURLResponse *response;
+@end
+
+@implementation SnifferTaskBuffer
+- (instancetype)init {
+    self = [super init];
+    if (self) _data = [NSMutableData data];
+    return self;
+}
+@end
+
+// ============================================================================
+// SECTION 3 — Thread-safe store
+// ============================================================================
+
+static NSMutableArray<SnifferRequest *> *g_requests = nil;
+static dispatch_queue_t g_storeQueue = nil;
+
+static void sniffer_store_init(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        g_requests = [NSMutableArray array];
+        g_storeQueue = dispatch_queue_create("com.sniffer.store", DISPATCH_QUEUE_SERIAL);
+    });
 }
 
-static NSString *getPersistentIDFV() {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    NSString *savedIDFV = [defaults stringForKey:@"Persistent_Custom_IDFV"];
-    if (!savedIDFV) {
-        savedIDFV = [[NSUUID UUID] UUIDString];
-        [defaults setObject:savedIDFV forKey:@"Persistent_Custom_IDFV"];
-        [defaults synchronize];
-    }
-    return savedIDFV;
+static void sniffer_store_add(SnifferRequest *req) {
+    if (!req) return;
+    sniffer_store_init();
+    dispatch_async(g_storeQueue, ^{
+        @try {
+            [g_requests insertObject:req atIndex:0];
+            if (g_requests.count > 500) [g_requests removeLastObject];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:@"SnifferNewRequest" object:nil];
+            });
+        } @catch (__unused NSException *e) { }
+    });
 }
 
-static void clearAllKeychainAndAddNewItem() {
-    NSArray *secClasses = @[
-        (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecClassInternetPassword,
-        (__bridge id)kSecClassCertificate,
-        (__bridge id)kSecClassKey,
-        (__bridge id)kSecClassIdentity
-    ];
-    
-    NSString *primaryAccessGroup = @"3J96GNXKKU.*";
-    
-    for (id secClass in secClasses) {
-        NSDictionary *generalQuery = @{
-            (__bridge id)kSecClass: secClass
-        };
-        SecItemDelete((__bridge CFDictionaryRef)generalQuery);
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            NSDictionary *groupQuery = @{
-                (__bridge id)kSecClass: secClass,
-                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
-            };
-            SecItemDelete((__bridge CFDictionaryRef)groupQuery);
-        }
-        
-        NSMutableDictionary *spec = [NSMutableDictionary dictionaryWithDictionary:@{
-            (__bridge id)kSecClass: secClass,
-            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
-            (__bridge id)kSecReturnPersistentRef: @YES
-        }];
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-        }
-        
-        CFArrayRef result = NULL;
-        if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
-            NSArray *items = (__bridge NSArray *)result;
-            for (id itemRef in items) {
-                NSDictionary *refQuery = @{
-                    (__bridge id)kSecValueRef: itemRef
-                };
-                SecItemDelete((__bridge CFDictionaryRef)refQuery);
+static void sniffer_record_update(SnifferRequest *rec,
+                                  NSURLResponse *resp,
+                                  NSData *data,
+                                  NSError *err) {
+    if (!rec) return;
+    sniffer_store_init();
+    dispatch_async(g_storeQueue, ^{
+        @try {
+            if (resp) {
+                rec.responseHeaders = [(NSHTTPURLResponse *)resp allHeaderFields];
+                rec.statusCode = [(NSHTTPURLResponse *)resp statusCode];
             }
-            CFRelease(result);
+            if (data) rec.responseBody = data;
+            if (err) rec.error = err;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:@"SnifferNewRequest" object:nil];
+            });
+        } @catch (__unused NSException *e) { }
+    });
+}
+
+static NSArray<SnifferRequest *> *sniffer_store_snapshot(void) {
+    sniffer_store_init();
+    __block NSArray *copy = @[];
+    dispatch_sync(g_storeQueue, ^{
+        @try { copy = [g_requests copy]; } @catch (__unused NSException *e) { }
+    });
+    return copy;
+}
+
+// ============================================================================
+// SECTION 4 — Gzip/Deflate (display only)
+// ============================================================================
+
+static NSData *sniffer_inflate(NSData *data, BOOL raw) {
+    if (data.length == 0) return data;
+    @try {
+        z_stream stream = {0};
+        stream.next_in = (Bytef *)data.bytes;
+        stream.avail_in = (uInt)data.length;
+        int windowBits = raw ? -MAX_WBITS : (15 + 32);
+        if (inflateInit2(&stream, windowBits) != Z_OK) return data;
+
+        NSMutableData *out = [NSMutableData dataWithCapacity:data.length * 4];
+        unsigned char buffer[32768];
+        int status;
+        do {
+            stream.next_out = buffer;
+            stream.avail_out = sizeof(buffer);
+            status = inflate(&stream, Z_NO_FLUSH);
+            if (status != Z_OK && status != Z_STREAM_END && status != Z_BUF_ERROR) {
+                inflateEnd(&stream);
+                return data;
+            }
+            NSUInteger produced = sizeof(buffer) - stream.avail_out;
+            if (produced) [out appendBytes:buffer length:produced];
+        } while (status != Z_STREAM_END && stream.avail_in > 0);
+
+        inflateEnd(&stream);
+        return out.length ? out : data;
+    } @catch (__unused NSException *e) { return data; }
+}
+
+static NSData *sniffer_decompress_for_display(NSData *data, NSDictionary *headers) {
+    @try {
+        NSString *enc = headers[@"Content-Encoding"] ?: headers[@"content-encoding"];
+        if (!enc) return data;
+        enc = enc.lowercaseString;
+        if ([enc containsString:@"gzip"])    return sniffer_inflate(data, NO);
+        if ([enc containsString:@"deflate"]) return sniffer_inflate(data, YES);
+    } @catch (__unused NSException *e) { }
+    return data;
+}
+
+// ============================================================================
+// SECTION 5 — Delegate Proxy
+// ============================================================================
+
+static const void *kSnifferRecordKey = &kSnifferRecordKey;
+static const void *kSnifferBufferKey = &kSnifferBufferKey;
+
+@interface SnifferDelegateProxy : NSObject <
+    NSURLSessionDelegate,
+    NSURLSessionTaskDelegate,
+    NSURLSessionDataDelegate,
+    NSURLSessionDownloadDelegate,
+    NSURLSessionStreamDelegate
+>
+@property (nonatomic, weak) id originalDelegate;
+@end
+
+@implementation SnifferDelegateProxy
+
+- (BOOL)respondsToSelector:(SEL)aSelector {
+    if ([super respondsToSelector:aSelector]) return YES;
+    return [self.originalDelegate respondsToSelector:aSelector];
+}
+
+- (id)forwardingTargetForSelector:(SEL)aSelector {
+    if ([self.originalDelegate respondsToSelector:aSelector]) {
+        return self.originalDelegate;
+    }
+    return [super forwardingTargetForSelector:aSelector];
+}
+
+- (void)URLSession:(NSURLSession *)session
+          dataTask:(NSURLSessionDataTask *)dataTask
+    didReceiveData:(NSData *)data {
+    @try {
+        SnifferTaskBuffer *buf = objc_getAssociatedObject(dataTask, kSnifferBufferKey);
+        if (!buf) {
+            buf = [SnifferTaskBuffer new];
+            objc_setAssociatedObject(dataTask, kSnifferBufferKey, buf,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
+        [buf.data appendData:data];
+    } @catch (__unused NSException *e) { }
+
+    if ([self.originalDelegate respondsToSelector:_cmd]) {
+        [self.originalDelegate URLSession:session dataTask:dataTask didReceiveData:data];
     }
-    
-    NSString *serviceName = @"app.getsmscode";
-    NSString *accountName = @"tokenKey";
-    NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
-    
-    NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
-    
-    NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: serviceName,
-        (__bridge id)kSecAttrAccount: accountName,
-        (__bridge id)kSecValueData: tokenData
-    }];
-    
-    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-        addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-    }
-    
-    SecItemDelete((__bridge CFDictionaryRef)addQuery);
-    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-    
-    if (addStatus == errSecSuccess) {
-        NSLog(@">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
+}
+
+- (void)URLSession:(NSURLSession *)session
+          dataTask:(NSURLSessionDataTask *)dataTask
+didReceiveResponse:(NSURLResponse *)response
+ completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
+    @try {
+        SnifferTaskBuffer *buf = objc_getAssociatedObject(dataTask, kSnifferBufferKey);
+        if (!buf) {
+            buf = [SnifferTaskBuffer new];
+            objc_setAssociatedObject(dataTask, kSnifferBufferKey, buf,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        buf.response = response;
+    } @catch (__unused NSException *e) { }
+
+    if ([self.originalDelegate respondsToSelector:_cmd]) {
+        [self.originalDelegate URLSession:session
+                                 dataTask:dataTask
+                       didReceiveResponse:response
+                        completionHandler:completionHandler];
     } else {
-        [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
-        SecItemDelete((__bridge CFDictionaryRef)addQuery);
-        OSStatus fallbackStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-        if (fallbackStatus == errSecSuccess) {
-            NSLog(@">>> [Dynamic-Refresh] Keychain wiped & tokenKey added via fallback mode.");
+        completionHandler(NSURLSessionResponseAllow);
+    }
+}
+
+- (void)URLSession:(NSURLSession *)session
+              task:(NSURLSessionTask *)task
+didCompleteWithError:(NSError *)error {
+    @try {
+        SnifferRequest *rec = objc_getAssociatedObject(task, kSnifferRecordKey);
+        SnifferTaskBuffer *buf = objc_getAssociatedObject(task, kSnifferBufferKey);
+
+        if (rec) {
+            NSURLResponse *resp = buf.response ?: task.response;
+            NSData *data = buf.data.length ? [buf.data copy] : nil;
+            NSDictionary *hdrs = [(NSHTTPURLResponse *)resp allHeaderFields];
+            NSData *display = sniffer_decompress_for_display(data, hdrs);
+            sniffer_record_update(rec, resp, display, error);
+        }
+    } @catch (__unused NSException *e) { }
+
+    if ([self.originalDelegate respondsToSelector:_cmd]) {
+        [self.originalDelegate URLSession:session task:task didCompleteWithError:error];
+    }
+}
+
+- (void)URLSession:(NSURLSession *)session
+      downloadTask:(NSURLSessionDownloadTask *)downloadTask
+didFinishDownloadingToURL:(NSURL *)location {
+    @try {
+        SnifferRequest *rec = objc_getAssociatedObject(downloadTask, kSnifferRecordKey);
+        if (rec && location) {
+            NSData *data = [NSData dataWithContentsOfURL:location];
+            sniffer_record_update(rec, downloadTask.response, data, nil);
+        }
+    } @catch (__unused NSException *e) { }
+
+    if ([self.originalDelegate respondsToSelector:_cmd]) {
+        [self.originalDelegate URLSession:session
+                             downloadTask:downloadTask
+                didFinishDownloadingToURL:location];
+    }
+}
+
+@end
+
+// ============================================================================
+// SECTION 6 — NSURLSession Swizzling
+// ============================================================================
+
+@interface NSURLSession (SnifferSwizzle)
+
+- (NSURLSessionDataTask *)sniffer_dataTaskWithRequest:(NSURLRequest *)request
+                                     completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
+- (NSURLSessionDataTask *)sniffer_dataTaskWithURL:(NSURL *)url
+                                completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
+- (NSURLSessionUploadTask *)sniffer_uploadTaskWithRequest:(NSURLRequest *)request
+                                                 fromData:(NSData *)bodyData
+                                        completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
+- (NSURLSessionDownloadTask *)sniffer_downloadTaskWithRequest:(NSURLRequest *)request
+                                            completionHandler:(void (^)(NSURL *, NSURLResponse *, NSError *))completionHandler;
+
+- (NSURLSessionDataTask *)sniffer_dataTaskWithRequest:(NSURLRequest *)request;
+- (NSURLSessionDataTask *)sniffer_dataTaskWithURL:(NSURL *)url;
+- (NSURLSessionUploadTask *)sniffer_uploadTaskWithRequest:(NSURLRequest *)request
+                                                 fromData:(NSData *)bodyData;
+- (NSURLSessionDownloadTask *)sniffer_downloadTaskWithRequest:(NSURLRequest *)request;
+
+@end
+
+@implementation NSURLSession (SnifferSwizzle)
+
+static SnifferRequest *sniffer_make_record(NSURLRequest *req, NSData *body) {
+    SnifferRequest *rec = [SnifferRequest new];
+    rec.url = req.URL.absoluteString ?: @"";
+    rec.method = req.HTTPMethod ?: @"GET";
+    rec.requestHeaders = req.allHTTPHeaderFields;
+    rec.requestBody = body ?: req.HTTPBody;
+    rec.timestamp = [NSDate date];
+    sniffer_store_add(rec);
+    return rec;
+}
+
+- (NSURLSessionDataTask *)sniffer_dataTaskWithRequest:(NSURLRequest *)request
+                                     completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    SnifferRequest *rec = sniffer_make_record(request, nil);
+
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
+        ^(NSData *data, NSURLResponse *resp, NSError *err) {
+        @try {
+            NSDictionary *hdrs = [(NSHTTPURLResponse *)resp allHeaderFields];
+            NSData *display = sniffer_decompress_for_display(data, hdrs);
+            sniffer_record_update(rec, resp, display, err);
+        } @catch (__unused NSException *e) { }
+        if (completionHandler) completionHandler(data, resp, err);
+    };
+
+    return [self sniffer_dataTaskWithRequest:request completionHandler:wrapped];
+}
+
+- (NSURLSessionDataTask *)sniffer_dataTaskWithURL:(NSURL *)url
+                                completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    NSURLRequest *req = [NSURLRequest requestWithURL:url];
+    SnifferRequest *rec = sniffer_make_record(req, nil);
+
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
+        ^(NSData *data, NSURLResponse *resp, NSError *err) {
+        @try {
+            NSDictionary *hdrs = [(NSHTTPURLResponse *)resp allHeaderFields];
+            NSData *display = sniffer_decompress_for_display(data, hdrs);
+            sniffer_record_update(rec, resp, display, err);
+        } @catch (__unused NSException *e) { }
+        if (completionHandler) completionHandler(data, resp, err);
+    };
+
+    return [self sniffer_dataTaskWithURL:url completionHandler:wrapped];
+}
+
+- (NSURLSessionUploadTask *)sniffer_uploadTaskWithRequest:(NSURLRequest *)request
+                                                 fromData:(NSData *)bodyData
+                                        completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    SnifferRequest *rec = sniffer_make_record(request, bodyData);
+
+    void (^wrapped)(NSData *, NSURLResponse *, NSError *) =
+        ^(NSData *data, NSURLResponse *resp, NSError *err) {
+        @try {
+            NSDictionary *hdrs = [(NSHTTPURLResponse *)resp allHeaderFields];
+            NSData *display = sniffer_decompress_for_display(data, hdrs);
+            sniffer_record_update(rec, resp, display, err);
+        } @catch (__unused NSException *e) { }
+        if (completionHandler) completionHandler(data, resp, err);
+    };
+
+    return [self sniffer_uploadTaskWithRequest:request
+                                      fromData:bodyData
+                             completionHandler:wrapped];
+}
+
+- (NSURLSessionDownloadTask *)sniffer_downloadTaskWithRequest:(NSURLRequest *)request
+                                            completionHandler:(void (^)(NSURL *, NSURLResponse *, NSError *))completionHandler {
+    SnifferRequest *rec = sniffer_make_record(request, nil);
+
+    void (^wrapped)(NSURL *, NSURLResponse *, NSError *) =
+        ^(NSURL *location, NSURLResponse *resp, NSError *err) {
+        @try {
+            NSData *data = location ? [NSData dataWithContentsOfURL:location] : nil;
+            sniffer_record_update(rec, resp, data, err);
+        } @catch (__unused NSException *e) { }
+        if (completionHandler) completionHandler(location, resp, err);
+    };
+
+    return [self sniffer_downloadTaskWithRequest:request completionHandler:wrapped];
+}
+
+- (NSURLSessionDataTask *)sniffer_dataTaskWithRequest:(NSURLRequest *)request {
+    NSURLSessionDataTask *task = [self sniffer_dataTaskWithRequest:request];
+    @try {
+        SnifferRequest *rec = sniffer_make_record(request, nil);
+        objc_setAssociatedObject(task, kSnifferRecordKey, rec,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } @catch (__unused NSException *e) { }
+    return task;
+}
+
+- (NSURLSessionDataTask *)sniffer_dataTaskWithURL:(NSURL *)url {
+    NSURLRequest *req = [NSURLRequest requestWithURL:url];
+    NSURLSessionDataTask *task = [self sniffer_dataTaskWithURL:url];
+    @try {
+        SnifferRequest *rec = sniffer_make_record(req, nil);
+        objc_setAssociatedObject(task, kSnifferRecordKey, rec,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } @catch (__unused NSException *e) { }
+    return task;
+}
+
+- (NSURLSessionUploadTask *)sniffer_uploadTaskWithRequest:(NSURLRequest *)request
+                                                 fromData:(NSData *)bodyData {
+    NSURLSessionUploadTask *task = [self sniffer_uploadTaskWithRequest:request
+                                                              fromData:bodyData];
+    @try {
+        SnifferRequest *rec = sniffer_make_record(request, bodyData);
+        objc_setAssociatedObject(task, kSnifferRecordKey, rec,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } @catch (__unused NSException *e) { }
+    return task;
+}
+
+- (NSURLSessionDownloadTask *)sniffer_downloadTaskWithRequest:(NSURLRequest *)request {
+    NSURLSessionDownloadTask *task = [self sniffer_downloadTaskWithRequest:request];
+    @try {
+        SnifferRequest *rec = sniffer_make_record(request, nil);
+        objc_setAssociatedObject(task, kSnifferRecordKey, rec,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } @catch (__unused NSException *e) { }
+    return task;
+}
+
+@end
+
+// ============================================================================
+// SECTION 7 — Session creation swizzle
+// ============================================================================
+
+@interface NSURLSession (SnifferSessionCreation)
+
+- (instancetype)sniffer_initWithConfiguration:(NSURLSessionConfiguration *)configuration
+                                     delegate:(id)delegate
+                                delegateQueue:(NSOperationQueue *)queue;
+
++ (NSURLSession *)sniffer_sessionWithConfiguration:(NSURLSessionConfiguration *)configuration
+                                          delegate:(id)delegate
+                                     delegateQueue:(NSOperationQueue *)queue;
+
+@end
+
+@implementation NSURLSession (SnifferSessionCreation)
+
+- (instancetype)sniffer_initWithConfiguration:(NSURLSessionConfiguration *)configuration
+                                     delegate:(id)delegate
+                                delegateQueue:(NSOperationQueue *)queue {
+    id effectiveDelegate = delegate;
+
+    if (delegate && ![delegate isKindOfClass:[SnifferDelegateProxy class]]) {
+        SnifferDelegateProxy *proxy = [SnifferDelegateProxy new];
+        proxy.originalDelegate = delegate;
+        effectiveDelegate = proxy;
+        snf_log(@"delegate wrapped: %@", NSStringFromClass([delegate class]));
+    }
+
+    return [self sniffer_initWithConfiguration:configuration
+                                      delegate:effectiveDelegate
+                                 delegateQueue:queue];
+}
+
++ (NSURLSession *)sniffer_sessionWithConfiguration:(NSURLSessionConfiguration *)configuration
+                                          delegate:(id)delegate
+                                     delegateQueue:(NSOperationQueue *)queue {
+    id effectiveDelegate = delegate;
+    if (delegate && ![delegate isKindOfClass:[SnifferDelegateProxy class]]) {
+        SnifferDelegateProxy *proxy = [SnifferDelegateProxy new];
+        proxy.originalDelegate = delegate;
+        effectiveDelegate = proxy;
+        snf_log(@"delegate wrapped (class): %@", NSStringFromClass([delegate class]));
+    }
+    return [self sniffer_sessionWithConfiguration:configuration
+                                         delegate:effectiveDelegate
+                                    delegateQueue:queue];
+}
+
+@end
+
+// ============================================================================
+// SECTION 8 — Installer
+// ============================================================================
+
+@interface SnifferSessionHook : NSObject
++ (void)install;
++ (void)swapDelegateOnExistingSession:(NSURLSession *)session;
+@end
+
+@implementation SnifferSessionHook
+
++ (void)install {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class cls = [NSURLSession class];
+
+        [self swap:cls
+               sel:@selector(dataTaskWithRequest:completionHandler:)
+              with:@selector(sniffer_dataTaskWithRequest:completionHandler:)];
+        [self swap:cls
+               sel:@selector(dataTaskWithURL:completionHandler:)
+              with:@selector(sniffer_dataTaskWithURL:completionHandler:)];
+        [self swap:cls
+               sel:@selector(uploadTaskWithRequest:fromData:completionHandler:)
+              with:@selector(sniffer_uploadTaskWithRequest:fromData:completionHandler:)];
+        [self swap:cls
+               sel:@selector(downloadTaskWithRequest:completionHandler:)
+              with:@selector(sniffer_downloadTaskWithRequest:completionHandler:)];
+
+        [self swap:cls
+               sel:@selector(dataTaskWithRequest:)
+              with:@selector(sniffer_dataTaskWithRequest:)];
+        [self swap:cls
+               sel:@selector(dataTaskWithURL:)
+              with:@selector(sniffer_dataTaskWithURL:)];
+        [self swap:cls
+               sel:@selector(uploadTaskWithRequest:fromData:)
+              with:@selector(sniffer_uploadTaskWithRequest:fromData:)];
+        [self swap:cls
+               sel:@selector(downloadTaskWithRequest:)
+              with:@selector(sniffer_downloadTaskWithRequest:)];
+
+        [self swap:cls
+               sel:@selector(initWithConfiguration:delegate:delegateQueue:)
+              with:@selector(sniffer_initWithConfiguration:delegate:delegateQueue:)];
+
+        Method m1 = class_getClassMethod(cls, @selector(sessionWithConfiguration:delegate:delegateQueue:));
+        Method m2 = class_getClassMethod(cls, @selector(sniffer_sessionWithConfiguration:delegate:delegateQueue:));
+        if (m1 && m2) method_exchangeImplementations(m1, m2);
+
+        snf_log(@"NSURLSession swizzle installed (instance + class init)");
+    });
+}
+
++ (void)swapDelegateOnExistingSession:(NSURLSession *)session {
+    @try {
+        if (!session) return;
+
+        id currentDelegate = session.delegate;
+        if (!currentDelegate) return;
+        if ([currentDelegate isKindOfClass:[SnifferDelegateProxy class]]) return;
+
+        SnifferDelegateProxy *proxy = [SnifferDelegateProxy new];
+        proxy.originalDelegate = currentDelegate;
+
+        @try {
+            [session setValue:proxy forKey:@"delegate"];
+            snf_log(@"KVC-swapped delegate on existing session: %@",
+                    NSStringFromClass([currentDelegate class]));
+            return;
+        } @catch (__unused NSException *e) { }
+
+        Ivar iv = class_getInstanceVariable([NSURLSession class], "_delegate");
+        if (!iv) iv = class_getInstanceVariable([NSURLSession class], "delegate");
+        if (iv) {
+            object_setIvar(session, iv, proxy);
+            snf_log(@"ivar-swapped delegate on existing session: %@",
+                    NSStringFromClass([currentDelegate class]));
         } else {
-            NSLog(@">>> [Dynamic-Refresh] Failed to add tokenKey, error code: %d", (int)fallbackStatus);
+            snf_log(@"could not swap delegate — no _delegate ivar");
         }
+    } @catch (NSException *e) {
+        snf_log(@"swapDelegateOnExistingSession failed: %@", e.reason);
     }
 }
 
-static NSString *randomEuropeanIP() {
-    return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
-}
-
-static double randomInactivitySeconds() {
-    return (double)(864000 + arc4random_uniform(4320000));
-}
-
-static NSString *generateFreshTimestamp() {
-    NSDate *now = [NSDate date];
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSS'+0300'"];
-    return [formatter stringFromDate:now];
-}
-
-void executeFullEnvironmentRefresh() {
-    @autoreleasepool {
-        clearAllKeychainAndAddNewItem();
-
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSString *homeDir = NSHomeDirectory();
-        
-        NSError *error = nil;
-        NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
-        for (NSString *item in homeContents) {
-            NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
-            [fileManager removeItemAtPath:fullPath error:&error];
-        }
-        
-        NSArray *targetSubPaths = @[
-            @"Documents",
-            @"Library/Caches",
-            @"Library/Application Support",
-            @"Library/Preferences",
-            @"Library/Cookies",
-            @"Library/WebKit",
-            @"Library/Saved Application State",
-            @"Library/NetworkCache",
-            @"Library/Caches/Snapshots",
-            @"tmp"
-        ];
-        
-        for (NSString *subDir in targetSubPaths) {
-            NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
-            if ([fileManager fileExistsAtPath:targetPath]) {
-                NSArray *contents = [fileManager contentsOfDirectoryAtPath:targetPath error:nil];
-                for (NSString *file in contents) {
-                    NSString *filePath = [targetPath stringByAppendingPathComponent:file];
-                    [fileManager removeItemAtPath:filePath error:nil];
-                }
-            }
-        }
-
-        NSHTTPCookieStorage *cookieStorage = [NSHTTPCookieStorage sharedHTTPCookieStorage];
-        for (NSHTTPCookie *cookie in cookieStorage.cookies) {
-            [cookieStorage deleteCookie:cookie];
-        }
-        [[NSURLCache sharedURLCache] removeAllCachedResponses];
-
-        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-        if (bundleIdentifier) {
-            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-        }
-        
-        NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
-        if ([fileManager fileExistsAtPath:groupDirBase]) {
-            NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
-            for (NSString *groupFolder in groupFolders) {
-                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
-                [fileManager removeItemAtPath:groupPath error:nil];
-            }
-        }
-
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        
-        [defaults removeObjectForKey:@"Persistent_Custom_IDFA"];
-        [defaults removeObjectForKey:@"Persistent_Custom_IDFV"];
-        
-        NSString *freshID = getPersistentIDFA();
-        NSString *freshDate = generateFreshTimestamp();
-        double dynamicInactivityTime = randomInactivitySeconds();
-        
-        [defaults setObject:freshID forKey:@"device.id.key"];
-        [defaults setObject:freshID forKey:@"com.google.sso.GeneratedDeviceIdentifier"];
-        [defaults setObject:freshID forKey:@"AppsFlyerUserId"];
-        [defaults setObject:freshID forKey:@"com.firebase.installations.app_id_to_fiid_enforcement"];
-        
-        [defaults setInteger:3 forKey:@"ATT_Tracking_Status"];
-        [defaults setInteger:1 forKey:@"ump_status"];
-        [defaults setInteger:1 forKey:@"IABTCF_gdprApplies"];
-        
-        [defaults setInteger:1 forKey:@"AppsFlyerRealLaunchCounter"];
-        [defaults setInteger:0 forKey:@"AppsFlyerReinstallCounter"];
-        [defaults setInteger:1 forKey:@"AppsFlyerLaunchKey"];
-        
-        [defaults setObject:freshDate forKey:@"AppsFlyerInstallDate"];
-        [defaults setObject:freshDate forKey:@"AppsFlyerFirstLaunchDate"];
-        [defaults setObject:freshDate forKey:@"AppsFlyerInstallTimestamp"];
-        
-        [defaults setDouble:0.0 forKey:@"AppsFlyerLastSessionDuration"];
-        [defaults setDouble:dynamicInactivityTime forKey:@"AppsFlyerTimePassedSincePrevLaunch"];
-        [defaults setDouble:dynamicInactivityTime forKey:@"time_passed_since_last_session"];
-        [defaults setDouble:dynamicInactivityTime forKey:@"last_activity_interval"];
-        
-        [defaults synchronize];
-        
-        NSLog(@">>> [Manual-Refresh] COMPLETE WIPE OF WEBKIT, NETWORK, CACHES & APP DATA SUCCESSFUL: %@", freshID);
-    }
-}
-
-@interface FloatingButtonWindow : UIWindow
-@property (nonatomic, strong) UIButton *targetButton;
-@end
-
-@implementation FloatingButtonWindow
-- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!self.targetButton) return NO;
-    CGPoint buttonPoint = [self convertPoint:point toView:self.targetButton];
-    return [self.targetButton pointInside:buttonPoint withEvent:event];
-}
-@end
-
-@interface FloatingButtonManager : NSObject
-+ (instancetype)sharedInstance;
-- (void)showFloatingButton;
-@end
-
-@implementation FloatingButtonManager {
-    FloatingButtonWindow *floatingWindow;
-    UIButton *refreshButton;
-}
-
-+ (instancetype)sharedInstance {
-    static FloatingButtonManager *sharedInstance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sharedInstance = [[FloatingButtonManager alloc] init];
-    });
-    return sharedInstance;
-}
-
-- (void)showFloatingButton {
-    if (self->floatingWindow) return;
-    
-    UIWindowScene *targetScene = nil;
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-            targetScene = (UIWindowScene *)scene;
-            break;
-        }
-    }
-    
-    if (targetScene) {
-        self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
++ (void)swap:(Class)cls sel:(SEL)a with:(SEL)b {
+    Method ma = class_getInstanceMethod(cls, a);
+    Method mb = class_getInstanceMethod(cls, b);
+    if (ma && mb) {
+        method_exchangeImplementations(ma, mb);
     } else {
-        self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        snf_log(@"swap failed: %@ <-> %@",
+                NSStringFromSelector(a), NSStringFromSelector(b));
     }
-    
-    self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
-    self->floatingWindow.backgroundColor = [UIColor clearColor];
-    
-    UIViewController *emptyVC = [[UIViewController alloc] init];
-    emptyVC.view.backgroundColor = [UIColor clearColor];
-    self->floatingWindow.rootViewController = emptyVC;
-    
-    self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
-    [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
-    self->refreshButton.layer.cornerRadius = 20;
-    self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
-    self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
-    self->refreshButton.layer.shadowOpacity = 0.4;
-    self->refreshButton.layer.shadowRadius = 4;
-    
-    CGRect screenBounds = [UIScreen mainScreen].bounds;
-    CGFloat screenWidth = screenBounds.size.width;
-    self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
-    
-    [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
-    
-    self->floatingWindow.targetButton = self->refreshButton;
-    [emptyVC.view addSubview:self->refreshButton];
-    [self->floatingWindow setHidden:NO];
-}
-
-- (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
-    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                           message:@"تم مسح كل داتا، WebKit، ملفات الشبكة، الكاش والبيانات من الجذور بنجاح تام." 
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-    
-    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        exit(0);
-    }]];
-    
-    [rootVC presentViewController:successAlert animated:YES completion:nil];
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        exit(0);
-    });
-}
-
-- (void)handleRefreshButtonTapped {
-    UIViewController *rootVC = self->floatingWindow.rootViewController;
-    
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
-                                                               message:@"جاري مسح كافة ملفات WebKit، الكاش، الشبكة والداتا من الجذور..." 
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    
-    __weak typeof(self) weakSelf = self;
-    [rootVC presentViewController:alert animated:YES completion:^{
-        executeFullEnvironmentRefresh();
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                if (weakSelf) {
-                    [weakSelf showSuccessAlertFromRoot:rootVC];
-                }
-            }];
-        });
-    }];
 }
 
 @end
 
-%ctor {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[FloatingButtonManager sharedInstance] showFloatingButton];
+// ============================================================================
+// SECTION 9 — Overlay UI
+// ============================================================================
+
+static UIView     *g_overlay       = nil;
+static UITextView *g_overlayText   = nil;
+static id          g_observerToken = nil;
+
+static UIWindow *sniffer_key_window(void) {
+    UIWindow *keyWindow = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            if (scene.activationState != UISceneActivationStateForegroundActive) continue;
+            UIWindowScene *ws = (UIWindowScene *)scene;
+            for (UIWindow *w in ws.windows) {
+                if (w.isKeyWindow) { keyWindow = w; break; }
+            }
+            if (keyWindow) break;
+        }
+    }
+    if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+    if (!keyWindow) {
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow) { keyWindow = w; break; }
+        }
+    }
+    return keyWindow;
+}
+
+static NSString *sniffer_format_request(SnifferRequest *r) {
+    NSURL *u = [NSURL URLWithString:r.url];
+    NSString *host = u.host ?: @"";
+    NSString *path = u.path.length ? u.path : @"/";
+    NSString *query = u.query.length ? [NSString stringWithFormat:@"?%@", u.query] : @"";
+
+    NSString *statusStr = r.statusCode ? [NSString stringWithFormat:@"%ld", (long)r.statusCode] : @"...";
+
+    NSMutableString *s = [NSMutableString string];
+    [s appendFormat:@"[%@] [%@] %@%@%@\n", r.method ?: @"?", statusStr, host, path, query];
+
+    if (r.responseBody.length) {
+        NSString *body = nil;
+        @try {
+            NSError *err = nil;
+            id json = [NSJSONSerialization JSONObjectWithData:r.responseBody options:0 error:&err];
+            if (json && !err) {
+                NSData *pretty = [NSJSONSerialization dataWithJSONObject:json
+                                                                 options:NSJSONWritingPrettyPrinted
+                                                                   error:nil];
+                if (pretty)
+                    body = [[NSString alloc] initWithData:pretty encoding:NSUTF8StringEncoding];
+            }
+        } @catch (__unused NSException *e) { }
+
+        if (!body)
+            body = [[NSString alloc] initWithData:r.responseBody encoding:NSUTF8StringEncoding];
+
+        if (body.length > 220)
+            body = [[body substringToIndex:220] stringByAppendingString:@"...(truncated)"];
+
+        if (body) {
+            [s appendFormat:@"Data: %@\n", body];
+        } else {
+            [s appendFormat:@"Data: [Binary %lu bytes]\n", (unsigned long)r.responseBody.length];
+        }
+    } else if (r.error) {
+        [s appendFormat:@"Error: %@\n", r.error.localizedDescription];
+    } else {
+        [s appendFormat:@"Data: [waiting...]\n"];
+    }
+
+    return s;
+}
+
+static void sniffer_refresh_overlay(void) {
+    if (!g_overlayText) return;
+    NSArray<SnifferRequest *> *items = sniffer_store_snapshot();
+
+    NSMutableString *s = [NSMutableString stringWithFormat:
+        @"Network Sniffer — %lu request(s)\n============================\n",
+        (unsigned long)items.count];
+
+    NSUInteger limit = MIN(items.count, 40);
+    for (NSUInteger i = 0; i < limit; i++) {
+        [s appendString:sniffer_format_request(items[i])];
+        [s appendString:@"----------------------------\n"];
+    }
+
+    g_overlayText.text = s;
+}
+
+static void sniffer_build_overlay(void) {
+    @try {
+        if (g_overlay) return;
+
+        UIWindow *keyWindow = sniffer_key_window();
+        if (!keyWindow) { snf_log(@"build overlay: no key window"); return; }
+
+        CGRect b = keyWindow.bounds;
+
+        g_overlay = [[UIView alloc] initWithFrame:
+            CGRectMake(5, 40, b.size.width - 10, 270)];
+        g_overlay.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.99];
+        g_overlay.layer.cornerRadius = 10;
+        g_overlay.layer.borderWidth = 1.8;
+        g_overlay.layer.borderColor = [UIColor greenColor].CGColor;
+        g_overlay.userInteractionEnabled = YES;
+        g_overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+        g_overlayText = [[UITextView alloc] initWithFrame:
+            CGRectMake(5, 5,
+                       g_overlay.bounds.size.width - 10,
+                       g_overlay.bounds.size.height - 10)];
+        g_overlayText.backgroundColor = [UIColor clearColor];
+        g_overlayText.textColor = [UIColor greenColor];
+        g_overlayText.font = [UIFont fontWithName:@"Courier-Bold" size:7.5]
+                             ?: [UIFont systemFontOfSize:7.5];
+        g_overlayText.editable = NO;
+        g_overlayText.text = @"[+] Network Sniffer Online...\n";
+        g_overlayText.autoresizingMask =
+            UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+
+        [g_overlay addSubview:g_overlayText];
+        [keyWindow addSubview:g_overlay];
+        [keyWindow bringSubviewToFront:g_overlay];
+
+        if (!g_observerToken) {
+            g_observerToken = [[NSNotificationCenter defaultCenter]
+                addObserverForName:@"SnifferNewRequest"
+                            object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification *note) {
+                sniffer_refresh_overlay();
+            }];
+        }
+
+        snf_log(@"Overlay installed on key window");
+        sniffer_refresh_overlay();
+    } @catch (NSException *e) {
+        snf_log(@"buildOverlay failed: %@", e);
+    }
+}
+
+// ============================================================================
+// SECTION 10 — Install UI with retry
+// ============================================================================
+
+static dispatch_source_t g_retryTimer = nil;
+
+static BOOL sniffer_try_install_ui(void) {
+    if (g_overlay) return YES;
+    @try {
+        UIWindow *w = sniffer_key_window();
+        if (!w) return NO;
+        sniffer_build_overlay();
+        return g_overlay != nil;
+    } @catch (NSException *e) {
+        snf_log(@"tryInstallUI failed: %@", e);
+        return NO;
+    }
+}
+
+static void sniffer_schedule_ui_retry(void) {
+    if (g_retryTimer) return;
+    g_retryTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                          dispatch_get_main_queue());
+    dispatch_source_set_timer(g_retryTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC),
+                              1 * NSEC_PER_SEC,
+                              0.1 * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(g_retryTimer, ^{
+        if (sniffer_try_install_ui()) {
+            dispatch_source_cancel(g_retryTimer);
+            g_retryTimer = nil;
+        }
     });
+    dispatch_resume(g_retryTimer);
 }
 
-// السماح بالتتبع وإرجاع الحالة 3 دائماً
-%hook ATTrackingManager
-+ (NSUInteger)trackingAuthorizationStatus {
-    return 3;
-}
+// ============================================================================
+// SECTION 11 — Bootstrap (hook immediately, UI delayed)
+// ============================================================================
 
-+ (void)requestTrackingAuthorizationWithCompletionHandler:(void(^)(NSUInteger status))completion {
-    if (completion) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            completion(3);
+__attribute__((constructor))
+static void SnifferBootstrap(void) {
+    snf_log(@"dylib loaded");
+
+    // 1) Session hook IMMEDIATELY — before the app creates any session.
+    snf_safe(@"Session hook", ^{
+        [SnifferSessionHook install];
+    });
+
+    // 2) Try to wrap delegate on already-existing shared session.
+    snf_safe(@"Existing sessions", ^{
+        NSURLSession *shared = [NSURLSession sharedSession];
+        if (shared) [SnifferSessionHook swapDelegateOnExistingSession:shared];
+    });
+
+    // 3) UI install — deferred, with retry.
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationDidBecomeActiveNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *note) {
+        if (!sniffer_try_install_ui()) sniffer_schedule_ui_retry();
+    }];
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        snf_safe(@"UI", ^{
+            if (!sniffer_try_install_ui()) {
+                snf_log(@"UI not ready — scheduling retry");
+                sniffer_schedule_ui_retry();
+            }
         });
-    }
-}
-%end
+    });
 
-%hook UIDevice
-- (NSUUID *)identifierForVendor {
-    return [[NSUUID alloc] initWithUUIDString:getPersistentIDFV()];
+    snf_log(@"bootstrap complete");
 }
-%end
-
-%hook ASIdentifierManager
-- (NSUUID *)advertisingIdentifier {
-    return [[NSUUID alloc] initWithUUIDString:getPersistentIDFA()];
-}
-- (BOOL)isAdvertisingTrackingEnabled {
-    return YES;
-}
-%end
-
-%hook NSMutableURLRequest
-- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
-    if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
-        value = randomEuropeanIP();
-    }
-    %orig(value, field);
-}
-%end
-
-%hook ActivatorAdService
-
-- (BOOL)isReady {
-    return YES;
-}
-
-- (BOOL)isAdReady {
-    return YES;
-}
-
-- (BOOL)canShowAd {
-    return YES;
-}
-
-- (BOOL)hasAdLoaded {
-    return YES;
-}
-
-- (void)loadAd {
-    %orig;
-}
-
-- (void)showRewardAd {
-    @try {
-        %orig;
-    } @catch (NSException *exception) {
-        NSLog(@">>> [Dynamic-Refresh] Exception in showRewardAd: %@", exception.reason);
-    }
-}
-
-- (void)presentAdFromViewController:(UIViewController *)viewController {
-    @try {
-        %orig;
-    } @catch (NSException *exception) {
-        NSLog(@">>> [Dynamic-Refresh] Exception caught in presentAdFromViewController: %@", exception.reason);
-    }
-}
-
-- (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
-    id targetSelf = self;
-    if ([targetSelf respondsToSelector:@selector(loadAd)]) {
-        [targetSelf loadAd];
-    }
-}
-
-%end
