@@ -274,8 +274,18 @@ void executeFullEnvironmentRefresh() {
     UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
                                                                            message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
                                                                     preferredStyle:UIAlertControllerStyleAlert];
-    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:nil]];
+    
+    // إضافة زر "حسناً" الذي يقوم بالخروج أيضاً عند الضغط عليه
+    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        exit(0);
+    }]];
+    
     [rootVC presentViewController:successAlert animated:YES completion:nil];
+    
+    // الخروج التلقائي بعد ظهور زر "حسناً" ورسالة النجاح بثانية واحدة (1.0 ثانية)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        exit(0);
+    });
 }
 
 - (void)handleRefreshButtonTapped {
