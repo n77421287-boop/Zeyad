@@ -2,9 +2,9 @@
 #import <UIKit/UIKit.h>
 #import <AdSupport/AdSupport.h>
 #import <AppTrackingTransparency/AppTrackingTransparency.h>
-#import <Security/Security.h>
 #import <objc/runtime.h>
 
+// إعلان مسبق شامل لكل الدوال المحتملة لمدير الإعلانات
 @interface ActivatorAdService : NSObject
 - (void)loadAd;
 - (BOOL)isReady;
@@ -15,10 +15,8 @@
 - (void)presentAdFromViewController:(UIViewController *)viewController;
 @end
 
-extern void executeFullEnvironmentRefresh(void);
-
-// 1. حذف جميع عناصر الـ Keychain بالكامل ديناميكياً وجذرياً ثم إضافة التوكن الجديد
-static void clearAllKeychainAndAddNewItem() {
+// 1. تنظيف الـ Keychain تماماً مع الحفاظ حصرياً على الـ tokenKey
+static void clearKeychainExceptToken() {
     NSArray *secClasses = @[
         (__bridge id)kSecClassGenericPassword,
         (__bridge id)kSecClassInternetPassword,
@@ -27,75 +25,26 @@ static void clearAllKeychainAndAddNewItem() {
         (__bridge id)kSecClassIdentity
     ];
     
-    NSString *primaryAccessGroup = @"3J96GNXKKU.*";
-    
     for (id secClass in secClasses) {
-        NSDictionary *generalQuery = @{
-            (__bridge id)kSecClass: secClass
-        };
-        SecItemDelete((__bridge CFDictionaryRef)generalQuery);
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            NSDictionary *groupQuery = @{
-                (__bridge id)kSecClass: secClass,
-                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
-            };
-            SecItemDelete((__bridge CFDictionaryRef)groupQuery);
-        }
-        
-        NSMutableDictionary *spec = [NSMutableDictionary dictionaryWithDictionary:@{
-            (__bridge id)kSecClass: secClass,
-            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
-            (__bridge id)kSecReturnPersistentRef: @YES
-        }];
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-        }
-        
+        NSDictionary *spec = @{(__bridge id)kSecClass: secClass};
         CFArrayRef result = NULL;
         if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
             NSArray *items = (__bridge NSArray *)result;
-            for (id itemRef in items) {
-                NSDictionary *refQuery = @{
-                    (__bridge id)kSecValueRef: itemRef
-                };
-                SecItemDelete((__bridge CFDictionaryRef)refQuery);
+            for (NSDictionary *item in items) {
+                NSString *account = item[(__bridge id)kSecAttrAccount];
+                NSString *service = item[(__bridge id)kSecAttrService];
+                
+                if (![account isEqualToString:@"tokenKey"]) {
+                    NSMutableDictionary *delQuery = [NSMutableDictionary dictionaryWithDictionary:item];
+                    delQuery[(__bridge id)kSecClass] = secClass;
+                    SecItemDelete((__bridge CFDictionaryRef)delQuery);
+                } else {
+                    NSLog(@">>> [Dynamic-Refresh] tokenKey safely preserved: %@", service);
+                }
             }
-            CFRelease(result);
-        }
-    }
-    
-    NSString *serviceName = @"app.getsmscode";
-    NSString *accountName = @"tokenKey";
-    NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
-    
-    NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
-    
-    NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: serviceName,
-        (__bridge id)kSecAttrAccount: accountName,
-        (__bridge id)kSecValueData: tokenData
-    }];
-    
-    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-        addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-    }
-    
-    SecItemDelete((__bridge CFDictionaryRef)addQuery);
-    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-    
-    if (addStatus == errSecSuccess) {
-        NSLog(@">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
-    } else {
-        [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
-        SecItemDelete((__bridge CFDictionaryRef)addQuery);
-        OSStatus fallbackStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-        if (fallbackStatus == errSecSuccess) {
-            NSLog(@">>> [Dynamic-Refresh] Keychain wiped & tokenKey added via fallback mode.");
-        } else {
-            NSLog(@">>> [Dynamic-Refresh] Failed to add tokenKey, error code: %d", (int)fallbackStatus);
+            if (result) {
+                CFRelease(result);
+            }
         }
     }
 }
@@ -105,7 +54,7 @@ static NSString *randomNewIDFA() {
 }
 
 static NSString *randomEuropeanIP() {
-    return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
+    return [NSString stringWithFormat:@"172.59.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
 }
 
 static double randomInactivitySeconds() {
@@ -119,14 +68,27 @@ static NSString *generateFreshTimestamp() {
     return [formatter stringFromDate:now];
 }
 
-// 2. دالة تنظيف شاملة وجذرية لكل ملفات ومجلدات و بيانات التطبيق بنسبة 100%
-void executeFullEnvironmentRefresh() {
+// 2. دالة مركزية شاملة لتنظيف البيئة بالكامل وتوليد هوية وجهاز جديد (تُستعمل للإقلاع وعند انتهاء كل إعلان)
+static void executeFullEnvironmentRefresh() {
     @autoreleasepool {
-        clearAllKeychainAndAddNewItem();
+        // أ) حماية التوكن في الكيشين
+        clearKeychainExceptToken();
+
+        // ب) مسح نطاق الـ NSUserDefaults بالكامل
+        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+        if (bundleIdentifier) {
+            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
+        }
+
+        // ج) تفريغ كاش الشبكة بالكامل
+        [[NSURLCache sharedURLCache] removeAllCachedResponses];
+        [[NSURLCache sharedURLCache] setDiskCapacity:0];
+        [[NSURLCache sharedURLCache] setMemoryCapacity:0];
 
         NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSString *homeDir = NSHomeDirectory();
         
+        // د) مسح الـ Sandbox الرئيسي بالكامل
+        NSString *homeDir = NSHomeDirectory();
         NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
         for (NSString *item in homeContents) {
@@ -134,23 +96,7 @@ void executeFullEnvironmentRefresh() {
             [fileManager removeItemAtPath:fullPath error:&error];
         }
         
-        NSArray *subDirs = @[@"Documents", @"Library/Caches", @"Library/Application Support", @"Library/Preferences", @"Library/Cookies", @"tmp"];
-        for (NSString *subDir in subDirs) {
-            NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
-            if ([fileManager fileExistsAtPath:targetPath]) {
-                NSArray *contents = [fileManager contentsOfDirectoryAtPath:targetPath error:nil];
-                for (NSString *file in contents) {
-                    NSString *filePath = [targetPath stringByAppendingPathComponent:file];
-                    [fileManager removeItemAtPath:filePath error:nil];
-                }
-            }
-        }
-
-        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-        if (bundleIdentifier) {
-            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-        }
-        
+        // هـ) مسح كل الـ App Groups المرتبطة
         NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
         if ([fileManager fileExistsAtPath:groupDirBase]) {
             NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
@@ -160,6 +106,7 @@ void executeFullEnvironmentRefresh() {
             }
         }
 
+        // و) حقن هويات وبصمات جديدة بالكامل كأنه جهاز جديد تماماً
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSString *freshID = randomNewIDFA();
         NSString *freshDate = generateFreshTimestamp();
@@ -189,134 +136,16 @@ void executeFullEnvironmentRefresh() {
         
         [defaults synchronize];
         
-        NSLog(@">>> [Manual-Refresh] COMPLETE AND TOTAL WIPE OF ALL APP DATA & FILES SUCCESSFUL: %@", freshID);
+        NSLog(@">>> [Dynamic-Refresh] Full environment wiped & fresh ID spawned: %@", freshID);
     }
 }
 
-// 3. نافذة مخصصة للزر العائم تمرر اللمسات للشاشة خلفها وتستجيب للزر فقط
-@interface FloatingButtonWindow : UIWindow
-@property (nonatomic, strong) UIButton *targetButton;
-@end
-
-@implementation FloatingButtonWindow
-- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!self.targetButton) return NO;
-    CGPoint buttonPoint = [self convertPoint:point toView:self.targetButton];
-    return [self.targetButton pointInside:buttonPoint withEvent:event];
-}
-@end
-
-@interface FloatingButtonManager : NSObject
-+ (instancetype)sharedInstance;
-- (void)showFloatingButton;
-@end
-
-@implementation FloatingButtonManager {
-    FloatingButtonWindow *floatingWindow;
-    UIButton *refreshButton;
+// تشغيل التطهير تلقائياً مع كل إقلاع للتطبيق
+static __attribute__((constructor)) void initialAppLaunchSetup() {
+    executeFullEnvironmentRefresh();
 }
 
-+ (instancetype)sharedInstance {
-    static FloatingButtonManager *sharedInstance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sharedInstance = [[FloatingButtonManager alloc] init];
-    });
-    return sharedInstance;
-}
-
-- (void)showFloatingButton {
-    if (self->floatingWindow) return;
-    
-    UIWindowScene *targetScene = nil;
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-            targetScene = (UIWindowScene *)scene;
-            break;
-        }
-    }
-    
-    if (targetScene) {
-        self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
-    } else {
-        self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    }
-    
-    self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
-    self->floatingWindow.backgroundColor = [UIColor clearColor];
-    
-    UIViewController *emptyVC = [[UIViewController alloc] init];
-    emptyVC.view.backgroundColor = [UIColor clearColor];
-    self->floatingWindow.rootViewController = emptyVC;
-    
-    self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
-    [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
-    self->refreshButton.layer.cornerRadius = 20;
-    self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
-    self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
-    self->refreshButton.layer.shadowOpacity = 0.4;
-    self->refreshButton.layer.shadowRadius = 4;
-    
-    CGRect screenBounds = [UIScreen mainScreen].bounds;
-    CGFloat screenWidth = screenBounds.size.width;
-    self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
-    
-    [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
-    
-    self->floatingWindow.targetButton = self->refreshButton;
-    [emptyVC.view addSubview:self->refreshButton];
-    [self->floatingWindow setHidden:NO];
-}
-
-- (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
-    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                           message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-    
-    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        exit(0);
-    }]];
-    
-    [rootVC presentViewController:successAlert animated:YES completion:nil];
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        exit(0);
-    });
-}
-
-- (void)handleRefreshButtonTapped {
-    UIViewController *rootVC = self->floatingWindow.rootViewController;
-    
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
-                                                               message:@"جاري مسح كافة ملفات، بيانات وداتا التطبيق من الجذور..." 
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    
-    __weak typeof(self) weakSelf = self;
-    [rootVC presentViewController:alert animated:YES completion:^{
-        executeFullEnvironmentRefresh();
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                if (weakSelf) {
-                    [weakSelf showSuccessAlertFromRoot:rootVC];
-                }
-            }];
-        });
-    }];
-}
-
-@end
-
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق بالطريقة المتوافقة تماماً
-%ctor {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[FloatingButtonManager sharedInstance] showFloatingButton];
-    });
-}
-
-// بقية الهوكات والتعديلات
+// 3. فرض حالة رفض التتبع على مستوى النظام برمجياً
 %hook ATTrackingManager
 + (NSUInteger)trackingAuthorizationStatus {
     return 2;
@@ -325,7 +154,7 @@ void executeFullEnvironmentRefresh() {
 
 %hook UIDevice
 - (NSUUID *)identifierForVendor {
-    return %orig;
+    return [NSUUID UUID];
 }
 %end
 
@@ -339,7 +168,7 @@ void executeFullEnvironmentRefresh() {
 %end
 
 %hook NSMutableURLRequest
-- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString * _Nullable)field {
+- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
     if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
         value = randomEuropeanIP();
     }
@@ -347,6 +176,7 @@ void executeFullEnvironmentRefresh() {
 }
 %end
 
+// --- التحصين المطلق: تجديد البيئة وجلب إعلانات جديدة فوراً بعد انتهاء كل إعلان ---
 %hook ActivatorAdService
 
 - (BOOL)isReady {
@@ -367,11 +197,29 @@ void executeFullEnvironmentRefresh() {
 
 - (void)loadAd {
     %orig;
+    id targetSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if ([targetSelf respondsToSelector:@selector(loadAd)]) {
+            [targetSelf loadAd];
+        }
+    });
 }
 
 - (void)showRewardAd {
     @try {
         %orig;
+        NSLog(@">>> [Dynamic-Refresh] showRewardAd executed. Refreshing environment for the next ad.");
+        
+        // بمجرد انتهاء عرض الإعلان الحالي، نقوم فوراً بتنفيذ عملية تجديد البيئة بالكامل (مسح الكاش، توليد IDFA جديد)
+        // ثم طلب إعلان جديد ليكون جاهزاً بشكل فوري وبدون الحاجة للخروج من التطبيق
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            executeFullEnvironmentRefresh();
+            
+            if ([self respondsToSelector:@selector(loadAd)]) {
+                [self loadAd];
+            }
+        });
+        
     } @catch (NSException *exception) {
         NSLog(@">>> [Dynamic-Refresh] Exception in showRewardAd: %@", exception.reason);
     }
@@ -380,12 +228,22 @@ void executeFullEnvironmentRefresh() {
 - (void)presentAdFromViewController:(UIViewController *)viewController {
     @try {
         %orig;
+        // تكرار نفس العملية هنا أيضاً لضمان شمولية طرق العرض المختلفة
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            executeFullEnvironmentRefresh();
+            
+            if ([self respondsToSelector:@selector(loadAd)]) {
+                [self loadAd];
+            }
+        });
     } @catch (NSException *exception) {
         NSLog(@">>> [Dynamic-Refresh] Exception caught in presentAdFromViewController: %@", exception.reason);
     }
 }
 
 - (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
+    NSLog(@">>> [Dynamic-Refresh] Ad error intercepted, refreshing environment and re-loading.");
+    executeFullEnvironmentRefresh();
     id targetSelf = self;
     if ([targetSelf respondsToSelector:@selector(loadAd)]) {
         [targetSelf loadAd];
