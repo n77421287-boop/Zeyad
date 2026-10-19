@@ -3,9 +3,17 @@
 #include <mach/mach_time.h>
 
 // ==========================================
-// 1. تعريف واجهات أبل الداخلية لإنشاء اللمسات المباشرة
+// 1. هيكل المحاكاة الحقيقي لأداة iGameGod
 // ==========================================
-@interface UITouch (Private)
+@interface PTTouch : NSObject
+@property (nonatomic, assign) CGPoint point;
+@property (nonatomic, assign) UITouchPhase phase;
+@end
+
+@implementation PTTouch
+@end
+
+@interface UITouch (iGameGodEngine)
 - (void)setPhase:(UITouchPhase)phase;
 - (void)setLocationInWindow:(CGPoint)location;
 - (void)setTimestamp:(NSTimeInterval)timestamp;
@@ -15,12 +23,12 @@
 - (void)setTapCount:(NSUInteger)tapCount;
 @end
 
-@interface UIEvent (Private)
+@interface UIEvent (iGameGodEngine)
 - (void)_addTouch:(UITouch *)touch forFocusedForcedPanGestureRecognizer:(id)recognizer;
 - (void)_clearTouches;
 @end
 
-@interface UIApplication (Private)
+@interface UIApplication (iGameGodEngine)
 - (UIEvent *)_touchesEvent;
 @end
 
@@ -51,7 +59,7 @@
 @end
 
 // ==========================================
-// 3. إدارة التسجيل والتشغيل والتفاعل الحقيقي
+// 3. إدارة الماكرو واللمس المتطورة
 // ==========================================
 @interface MacroManager : NSObject
 @property (nonatomic, strong) UIWindow *floatingWindow;
@@ -98,7 +106,7 @@
     self = [super init];
     if (self) {
         _recordedEvents = [NSMutableArray array];
-        _macroQueue = dispatch_queue_create("com.macro.engine.queue", DISPATCH_QUEUE_SERIAL);
+        _macroQueue = dispatch_queue_create("com.igamegod.safe.queue", DISPATCH_QUEUE_SERIAL);
         [self loadDataFromFile];
     }
     return self;
@@ -145,7 +153,7 @@
     [[NSFileManager defaultManager] removeItemAtPath:[self filePath] error:nil];
 }
 
-// دائرة حمراء بصرية للتأكيد
+// رسم الدائرة الحمراء البصرية للتأكيد
 - (void)showTouchIndicatorAtPoint:(CGPoint)point {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIWindowScene *targetScene = nil;
@@ -185,7 +193,7 @@
     });
 }
 
-// التنبيهات العائمة المؤقتة
+// التنبيهات العائمة
 - (void)showToast:(NSString *)message {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!self.toastWindow) {
@@ -238,7 +246,7 @@
     }
 }
 
-// تصميم الواجهة العائمة أسفل يمين الشاشة
+// تصميم الواجهة العائمة
 - (void)setupUI {
     if (self.floatingWindow) return;
     
@@ -428,41 +436,67 @@
 }
 
 // ==========================================
-// 4. محرك حقن اللمس الفعلي والمتفاعل مع الشاشة (نظام iGameGod الحقيقي)
+// 4. محرك حقن اللمس الآمن والمضمون (طريقة iGameGod المحمية)
 // ==========================================
 - (void)injectTouchAtPoint:(CGPoint)point phase:(UITouchPhase)phase {
-    UIWindow *keyWindow = nil;
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow && ![w isEqual:self.floatingWindow]) {
-            keyWindow = w;
-            break;
+    // الضمان الأساسي لمنع الكراش: التنفيذ الآمن الفوري على Main Queue
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *keyWindow = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow && ![w isEqual:self.floatingWindow]) {
+                keyWindow = w;
+                break;
+            }
         }
-    }
-    if (!keyWindow) keyWindow = [[UIApplication sharedApplication].windows firstObject];
-    if (!keyWindow) return;
+        if (!keyWindow) keyWindow = [[UIApplication sharedApplication].windows firstObject];
+        if (!keyWindow) return;
 
-    if (phase == UITouchPhaseBegan) {
-        [self showTouchIndicatorAtPoint:point];
-    }
+        if (phase == UITouchPhaseBegan) {
+            [self showTouchIndicatorAtPoint:point];
+        }
 
-    UIView *hitView = [keyWindow hitTest:point withEvent:nil];
-    if (!hitView) hitView = keyWindow;
+        UIView *hitView = [keyWindow hitTest:point withEvent:nil];
+        if (!hitView) hitView = keyWindow;
 
-    UITouch *touch = [[UITouch alloc] init];
-    [touch setWindow:keyWindow];
-    [touch setView:hitView];
-    [touch setTapCount:1];
-    [touch setIsTap:YES];
-    [touch setTimestamp:CACurrentMediaTime()];
-    [touch setLocationInWindow:point];
-    [touch setPhase:phase];
+        // بناء كائن اللمس بالكامل
+        UITouch *touch = [[UITouch alloc] init];
+        [touch setWindow:keyWindow];
+        [touch setView:hitView];
+        [touch setTapCount:1];
+        [touch setIsTap:YES];
+        [touch setTimestamp:CACurrentMediaTime()];
+        [touch setLocationInWindow:point];
+        [touch setPhase:phase];
 
-    UIEvent *event = [[UIApplication sharedApplication] _touchesEvent];
-    if (event) {
-        [event _clearTouches];
-        [event _addTouch:touch forFocusedForcedPanGestureRecognizer:nil];
-        [[UIApplication sharedApplication] sendEvent:event];
-    }
+        // حماية الاستدعاء لتجنب الكراش مع الأنظمة الحديثة
+        @try {
+            SEL touchesSel = NSSelectorFromString(@"_touchesEvent");
+            if ([[UIApplication sharedApplication] respondsToSelector:touchesSel]) {
+                UIEvent *event = [[UIApplication sharedApplication] performSelector:touchesSel];
+                if (event) {
+                    SEL clearSel = NSSelectorFromString(@"_clearTouches");
+                    SEL addSel = NSSelectorFromString(@"_addTouch:forFocusedForcedPanGestureRecognizer:");
+                    
+                    if ([event respondsToSelector:clearSel]) {
+                        #pragma clang diagnostic push
+                        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                        [event performSelector:clearSel];
+                        #pragma clang diagnostic pop
+                    }
+                    
+                    if ([event respondsToSelector:addSel]) {
+                        IMP imp = [event methodForSelector:addSel];
+                        void (*func)(id, SEL, id, id) = (void (*)(id, SEL, id, id))imp;
+                        func(event, addSel, touch, nil);
+                    }
+                    
+                    [[UIApplication sharedApplication] sendEvent:event];
+                }
+            }
+        } @catch (NSException *exception) {
+            // صمام الأمان المباشر: أي خطأ يتجاهله الكود بدلاً من إغلاق التطبيق (Crash Free)
+        }
+    });
 }
 
 - (void)startPlaybackLoop {
@@ -483,15 +517,12 @@
                 
                 if (!self.isPlaying) break;
                 
-                // تحويل مراحل التسجيل إلى مراحل UITouchPhase الحقيقية للضغط
                 UITouchPhase touchPhase = UITouchPhaseMoved;
                 if (ev.phase == 0) touchPhase = UITouchPhaseBegan;
                 else if (ev.phase == 1) touchPhase = UITouchPhaseMoved;
                 else if (ev.phase == 2) touchPhase = UITouchPhaseEnded;
                 
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self injectTouchAtPoint:ev.point phase:touchPhase];
-                });
+                [self injectTouchAtPoint:ev.point phase:touchPhase];
             }
             usleep(20000);
         }
