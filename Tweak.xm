@@ -385,7 +385,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 - (void)showSuccessAlertFromRoot:(UIViewController * _Nonnull)rootVC message:(NSString * _Nonnull)msg {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action { exit(0); }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) { exit(0); }]];
     [rootVC presentViewController:alert animated:YES completion:nil];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ exit(0); });
 }
