@@ -253,7 +253,6 @@ static NSString *randomEuropeanIP() {
     return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
 }
 
-// دالة التطهير الجذري الشامل (تشمل الكاش، الكوكيز، الويب، والشبكة بنسبة 100%)
 void executeFullEnvironmentRefresh(BOOL rotateToken) {
     @autoreleasepool {
         NSInteger savedIndex = getCurrentTokenIndex();
@@ -274,7 +273,6 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             }
         }
         
-        // مسح جذري لكل ما يخص الذاكرة المؤقتة، الكوكيز، جلسات الشبكة، والـ WebKit
         NSArray *targetSubDirs = @[
             @"Library/Caches",
             @"Library/Application Support",
@@ -314,8 +312,6 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
         [defaults setObject:freshIDFA forKey:@"AppsFlyerUserId"];
         [defaults setInteger:(getStoredTrackingState() ? 3 : 2) forKey:@"ATT_Tracking_Status"];
         [defaults synchronize];
-        
-        NSLog(@">>> [Network & Deep Clean] All network cookies, webkit storage, and traces completely wiped.");
     }
 }
 
