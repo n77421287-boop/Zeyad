@@ -17,7 +17,19 @@
 
 extern void executeFullEnvironmentRefresh(void);
 
-// 1. حذف جميع عناصر الـ Keychain بالكامل ديناميكياً وجذرياً ثم إضافة التوكن الجديد
+// توليد توكن عشوائي جديد بنفس صيغة الـ Hex (طول 64 حرفاً سداسياً عشرياً) لمفتاح deviceTokenKey
+static NSString *generateRandomHexToken() {
+    NSMutableString *token = [NSMutableString stringWithCapacity:64];
+    NSString *letters = @"0123456789ABCDEF";
+    for (int i = 0; i < 64; i++) {
+        u_int32_t index = arc4random_uniform((u_int32_t)[letters length]);
+        unichar c = [letters characterAtIndex:index];
+        [token appendFormat:@"%C", c];
+    }
+    return token;
+}
+
+// 1. حذف جميع عناصر الـ Keychain ثم حقن كلا التوكنين معاً (tokenKey الأصلي بجانب deviceTokenKey الجديد)
 static void clearAllKeychainAndAddNewItem() {
     NSArray *secClasses = @[
         (__bridge id)kSecClassGenericPassword,
@@ -67,76 +79,77 @@ static void clearAllKeychainAndAddNewItem() {
     }
     
     NSString *serviceName = @"app.getsmscode";
-    NSString *accountName = @"tokenKey";
-    NSString *tokenValue  = @"mD4Emfwn7iB_qe4iOCxgRYNs";
     
-    NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
+    // --- العنصر الأول: tokenKey الأصلي ---
+    NSString *account1 = @"tokenKey";
+    NSString *tokenVal1 = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
+    NSData *data1 = [tokenVal1 dataUsingEncoding:NSUTF8StringEncoding];
     
-    NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
+    NSMutableDictionary *query1 = [NSMutableDictionary dictionaryWithDictionary:@{
         (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
         (__bridge id)kSecAttrService: serviceName,
-        (__bridge id)kSecAttrAccount: accountName,
-        (__bridge id)kSecValueData: tokenData
+        (__bridge id)kSecAttrAccount: account1,
+        (__bridge id)kSecValueData: data1
     }];
-    
     if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-        addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+        query1[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+    }
+    SecItemDelete((__bridge CFDictionaryRef)query1);
+    OSStatus status1 = SecItemAdd((__bridge CFDictionaryRef)query1, NULL);
+    if (status1 != errSecSuccess) {
+        [query1 removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
+        SecItemDelete((__bridge CFDictionaryRef)query1);
+        SecItemAdd((__bridge CFDictionaryRef)query1, NULL);
     }
     
-    SecItemDelete((__bridge CFDictionaryRef)addQuery);
-    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+    // --- العنصر الثاني: deviceTokenKey الجديد مع توكن Hex عشوائي بطول 64 حرفاً ---
+    NSString *account2 = @"deviceTokenKey";
+    NSString *tokenVal2 = generateRandomHexToken();
+    NSData *data2 = [tokenVal2 dataUsingEncoding:NSUTF8StringEncoding];
     
-    if (addStatus == errSecSuccess) {
-        NSLog(@">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
-    } else {
-        [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
-        SecItemDelete((__bridge CFDictionaryRef)addQuery);
-        OSStatus fallbackStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-        if (fallbackStatus == errSecSuccess) {
-            NSLog(@">>> [Dynamic-Refresh] Keychain wiped & tokenKey added via fallback mode.");
-        } else {
-            NSLog(@">>> [Dynamic-Refresh] Failed to add tokenKey, error code: %d", (int)fallbackStatus);
-        }
+    NSMutableDictionary *query2 = [NSMutableDictionary dictionaryWithDictionary:@{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: serviceName,
+        (__bridge id)kSecAttrAccount: account2,
+        (__bridge id)kSecValueData: data2
+    }];
+    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+        query2[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
     }
+    SecItemDelete((__bridge CFDictionaryRef)query2);
+    OSStatus status2 = SecItemAdd((__bridge CFDictionaryRef)query2, NULL);
+    if (status2 != errSecSuccess) {
+        [query2 removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
+        SecItemDelete((__bridge CFDictionaryRef)query2);
+        SecItemAdd((__bridge CFDictionaryRef)query2, NULL);
+    }
+    
+    NSLog(@">>> [Dynamic-Refresh] Both tokenKey and deviceTokenKey successfully injected into Keychain.");
 }
 
 static NSString *randomNewIDFA() {
     return [[NSUUID UUID] UUIDString];
 }
 
-static NSString *randomNewUUIDString() {
-    return [[[NSUUID UUID] UUIDString] uppercaseString];
-}
-
-static NSString *randomAppsFlyerUserId() {
-    long long randomPrefix = 1790000000000 + arc4random_uniform(99999999);
-    int randomSuffix = arc4random_uniform(9000000) + 1000000;
-    return [NSString stringWithFormat:@"%lld-%d", randomPrefix, randomSuffix];
-}
-
 static NSString *randomEuropeanIP() {
     return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
 }
 
-static double randomInactivitySeconds() {
-    return (double)(864000 + arc4random_uniform(4320000));
+// توليد فترة إزاحة عشوائية تتراوح بين 5 أيام إلى 60 يوماً بالثواني
+static double randomTimeOffsetSeconds() {
+    return (double)(432000 + arc4random_uniform(4752001));
 }
 
-static NSString *generateFreshTimestamp() {
-    NSDate *now = [NSDate date];
+// توليد التاريخ بصيغة AppsFlyer الدقيقة الظاهرة في الصور (yyyy-MM-dd'T'HH:mm:ss+0300)
+static NSString *generateShiftedTimestamp() {
+    double offsetSeconds = randomTimeOffsetSeconds();
+    NSDate *shiftedDate = [NSDate dateWithTimeIntervalSinceNow:-offsetSeconds];
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSS'+0300'"];
-    return [formatter stringFromDate:now];
+    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss+0300"];
+    return [formatter stringFromDate:shiftedDate];
 }
 
-static NSString *generateAppsFlyerDateString() {
-    NSDate *now = [NSDate date];
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    [formatter setDateFormat:@"yyyy-MM-dd_HHmmss'+0300'"];
-    return [formatter stringFromDate:now];
-}
-
-// 2. دالة تنظيف شاملة وجذرية لكل ملفات ومجلدات و بيانات التطبيق بنسبة 100%
+// 2. دالة تنظيف شاملة وضبط القيم الزمنية وفتح الإعلانات
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
         clearAllKeychainAndAddNewItem();
@@ -179,64 +192,63 @@ void executeFullEnvironmentRefresh() {
 
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSString *freshID = randomNewIDFA();
-        NSString *freshUUID = randomNewUUIDString();
-        NSString *freshAFUserId = randomAppsFlyerUserId();
-        NSString *freshDate = generateFreshTimestamp();
-        NSString *freshAFDate = generateAppsFlyerDateString();
-        double dynamicInactivityTime = randomInactivitySeconds();
+        NSString *shiftedDateStr = generateShiftedTimestamp();
+        double shiftedSeconds = randomTimeOffsetSeconds();
         
-        // ضبط المعرفات الأساسية (التي تتغير كلياً في كل ضغطة)
+        NSTimeInterval currentReferenceTime = [[NSDate date] timeIntervalSinceReferenceDate];
+        NSTimeInterval shiftedReferenceTime = currentReferenceTime - shiftedSeconds;
+        NSTimeInterval shiftedEpochMillis = shiftedReferenceTime * 1000.0;
+        double largeIntervalValue = shiftedSeconds * 50.0 + (double)arc4random_uniform(500000);
+
+        // المفاتيح والمعرفات المطابقة للصور
         [defaults setObject:freshID forKey:@"device.id.key"];
         [defaults setObject:freshID forKey:@"com.google.sso.GeneratedDeviceIdentifier"];
-        [defaults setObject:freshAFUserId forKey:@"AppsFlyerUserId"]; // <--- أصبح يتولد عشوائياً ومتجدداً
-        [defaults setObject:freshUUID forKey:@"igg-userId"];
-        [defaults setObject:freshUUID forKey:@"STASessionUUID"];
-        [defaults setObject:freshUUID forKey:@"STAStoredDeveloperUserId"];
+        [defaults setObject:freshID forKey:@"AppsFlyerUserId"];
+        [defaults setObject:freshID forKey:@"com.firebase.installations.app_id_to_fiid_enforcement"];
+        [defaults setObject:freshID forKey:@"igg-userId"];
+        [defaults setObject:freshID forKey:@"STAStoredDeveloperUserId"];
+        [defaults setObject:freshID forKey:@"STASessionUUID"];
+
+        // تصفير وفتح عدادات الإعلانات تماماً وتجاوز الانتظار
+        [defaults setInteger:0 forKey:@"ad_limit_counter"];
+        [defaults setInteger:0 forKey:@"daily_ads_watched"];
+        [defaults setObject:shiftedDateStr forKey:@"last_ad_watch_date"];
         
-        // ضبط حالات الموافقة وإعدادات StartApp و UMP
         [defaults setInteger:2 forKey:@"ATT_Tracking_Status"];
-        [defaults setInteger:3 forKey:@"ump_status"];
-        [defaults setInteger:1 forKey:@"ump_pors"];
-        [defaults setInteger:4444 forKey:@"UMP_consentModeValues"];
-        [defaults setInteger:1 forKey:@"IABTCF_gdprApplies"];
+        [defaults setInteger:2 forKey:@"ump_status"];
         [defaults setInteger:1 forKey:@"consent.gdpr.value"];
         [defaults setInteger:0 forKey:@"consent.gdpr.explicit"];
         [defaults setInteger:1 forKey:@"trackedKey"];
-        
-        // تفعيل أدوات StartApp
-        [defaults setInteger:1 forKey:@"STASKAAdNetworkEnabled"];
-        [defaults setInteger:1 forKey:@"STAWFScanEnabled"];
-        [defaults setInteger:1 forKey:@"STAOMSDKEnabled"];
-        [defaults setInteger:1 forKey:@"STANativeVideoEnabled"];
-        [defaults setInteger:1 forKey:@"STAStartAppBrowserEnabled"];
-        [defaults setInteger:1 forKey:@"STASKAAdImpressionsEnabled"];
-        [defaults setInteger:1 forKey:@"STASupportIABViewability"];
-        [defaults setInteger:1 forKey:@"STAAutoLoad"];
-        [defaults setInteger:1 forKey:@"STANativeVideoFullscreenAllowed"];
-        
-        // إعدادات AppsFlyer
-        [defaults setInteger:3 forKey:@"AppsFlyerRealLaunchCounter"];
+        [defaults setInteger:1 forKey:@"STAPas"];
+
+        [defaults setInteger:4 forKey:@"AppsFlyerCounter"];
+        [defaults setInteger:4 forKey:@"AppsFlyerRealLaunchCounter"];
         [defaults setInteger:0 forKey:@"AppsFlyerReinstallCounter"];
         [defaults setInteger:1 forKey:@"AppsFlyerLaunchKey"];
-        [defaults setInteger:5 forKey:@"AppsFlyerCounter"];
-        [defaults setObject:freshDate forKey:@"AppsFlyerInstallDate"];
-        [defaults setObject:freshDate forKey:@"AppsFlyerFirstLaunchDate"];
-        [defaults setObject:freshDate forKey:@"AppsFlyerInstallTimestamp"];
-        [defaults setObject:freshAFDate forKey:@"AppsFlyerDate3"];
-        [defaults setObject:freshAFDate forKey:@"AppsFlyerInitDate"];
-        
-        [defaults setDouble:34.0 forKey:@"AppsFlyerLastSessionDuration"];
-        [defaults setDouble:dynamicInactivityTime forKey:@"AppsFlyerTimePassedSincePrevLaunch"];
-        [defaults setDouble:dynamicInactivityTime forKey:@"time_passed_since_last_session"];
-        [defaults setDouble:dynamicInactivityTime forKey:@"last_activity_interval"];
-        
+        [defaults setInteger:1 forKey:@"AppsFlyerReadyToSendEvents"];
+
+        [defaults setObject:shiftedDateStr forKey:@"AppsFlyerInstallDate"];
+        [defaults setObject:shiftedDateStr forKey:@"AppsFlyerFirstLaunchDate"];
+        [defaults setObject:shiftedDateStr forKey:@"AppsFlyerInstallTimestamp"];
+        [defaults setObject:shiftedDateStr forKey:@"AppsFlyerInitDate"];
+
+        [defaults setDouble:1.0 forKey:@"AppsFlyerLastSessionDuration"];
+        [defaults setDouble:shiftedSeconds forKey:@"AppsFlyerTimePassedSincePrevLaunch"];
+        [defaults setDouble:largeIntervalValue forKey:@"time_passed_since_last_session"];
+        [defaults setDouble:largeIntervalValue forKey:@"last_activity_interval"];
+
+        [defaults setDouble:shiftedEpochMillis forKey:@"STAFirstSessionTime"];
+        [defaults setDouble:shiftedEpochMillis forKey:@"STACurrentSessionStartTime"];
+        [defaults setDouble:shiftedReferenceTime forKey:@"consent.gdpr.time"];
+        [defaults setDouble:shiftedReferenceTime forKey:@"SKPurchaseIntentUpdatesLastChecked"];
+
         [defaults synchronize];
         
-        NSLog(@">>> [Manual-Refresh] COMPLETE WIPE & DYNAMIC USERDEFAULTS RESTORE SUCCESSFUL: %@", freshID);
+        NSLog(@">>> [Manual-Refresh] BOTH TOKENS INJECTED & TIME SHIFTED 5-60 DAYS SUCCESSFUL: %@", freshID);
     }
 }
 
-// 3. نافذة مخصصة للزر العائم تمرر اللمسات للشاشة خلفها وتستجيب للزر فقط
+// 3. نافذة مخصصة للزر العائم
 @interface FloatingButtonWindow : UIWindow
 @property (nonatomic, strong) UIButton *targetButton;
 @end
@@ -313,9 +325,9 @@ void executeFullEnvironmentRefresh() {
     [self->floatingWindow setHidden:NO];
 }
 
-- (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
+- (void)showSuccessAlertFromRoot:(UIViewController * _Nonnull)rootVC {
     UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                           message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وزرع التوكن الجديد بنجاح تام." 
+                                                                           message:@"تم تطهير البيانات، حقن مفتاحي الـ Keychain (tokenKey و deviceTokenKey) معاً، وخداع الوقت (5 إلى 60 يوماً)." 
                                                                     preferredStyle:UIAlertControllerStyleAlert];
     
     [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
@@ -333,7 +345,7 @@ void executeFullEnvironmentRefresh() {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
     
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
-                                                               message:@"جاري مسح كافة ملفات، بيانات وداتا التطبيق من الجذور..." 
+                                                               message:@"جاري حقن التوكنين معاً في الـ Keychain وتطهير البيانات..." 
                                                         preferredStyle:UIAlertControllerStyleAlert];
     
     __weak typeof(self) weakSelf = self;
@@ -352,7 +364,7 @@ void executeFullEnvironmentRefresh() {
 
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق بالطريقة المتوافقة تماماً
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
@@ -382,7 +394,7 @@ void executeFullEnvironmentRefresh() {
 %end
 
 %hook NSMutableURLRequest
-- (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
+- (void)setValue:(NSString * _Nullable)value forHTTPHeaderField:(NSString *)field {
     if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
         value = randomEuropeanIP();
     }
