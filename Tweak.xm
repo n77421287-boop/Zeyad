@@ -2,8 +2,8 @@
 #import <UIKit/UIKit.h>
 #import <AdSupport/AdSupport.h>
 #import <AppTrackingTransparency/AppTrackingTransparency.h>
-#import <CoreLocation/CoreLocation.h>
 #import <Security/Security.h>
+#import <CoreLocation/CoreLocation.h>
 #import <objc/runtime.h>
 
 @interface ActivatorAdService : NSObject
@@ -16,180 +16,79 @@
 - (void)presentAdFromViewController:(UIViewController *)viewController;
 @end
 
-extern void executeFullEnvironmentRefresh(BOOL rotateToken);
-extern void setTrackingState(BOOL allowTracking);
+extern void executeFullEnvironmentRefresh(void);
 
-// قائمة التوكنات الثابتة (25 توكن)
-static NSArray<NSString *> *getTokenList() {
+static NSString * const kStoredResidentialIPKey   = @"com.dynamic.refresh.residential.ip";
+static NSString * const kStoredUserAgentKey       = @"com.dynamic.refresh.user.agent";
+static NSString * const kStoredAtlantaLatitudeKey = @"com.dynamic.refresh.atlanta.lat";
+static NSString * const kStoredAtlantaLongitudeKey= @"com.dynamic.refresh.atlanta.lon";
+
+// نطاقات T-Mobile السكنية الأمريكية الحقيقية
+static NSArray *getTMobileIPPools() {
     return @[
-        @"UUwHSBHjDY4HT2NhAcCZykCz",
-        @"QCtHTj1k0dOuGqW29MjiUpDy",
-        @"-37n6YQgA0gluM6ehfoyb3Vt",
-        @"kR4h2QCnk5evhqv7wYwZmnaG",
-        @"Sxda9D0iu8F_NiZaaOd1SIzL",
-        @"j6F_zFlKACZ4VCmnhTfJLptx",
-        @"MNwLj8ra-1IODCNasj3fgYXf",
-        @"uJ6zR8UbYGKzRHEEyHDQ6knC",
-        @"VS7xjG3dSitTxYd5kcPebWIn",
-        @"9FKwCpDYPTmiXQ-VZOU3pwkl",
-        @"PzbNALcprLZWCXETTPfbBpP6",
-        @"rwWCl0ifnXQC5VK3oVPSAsht",
-        @"Mj5-GpHEreha8Omtgl3TNxrF",
-        @"M55KCe0pdBCZ5MwGZx3I2WyV",
-        @"AAVKVY83R8fvjZxLtX0XhOl_",
-        @"LW51737_HxIT1JgmFgdyqxz3",
-        @"gSWnwGEpoLrqBjm8E3YAsgGy",
-        @"_DPtrQwEOd4stk8xzrFdfVJ1",
-        @"bO5oTiOKAA7udZ6HzQ_emW7V",
-        @"c9BZKMFkQrAHjqZE1NFLcj2R",
-        @"xHsY6b0cAh9J0JoTAHcQlmS0",
-        @"h8tM4zAX5DUIr5yZnnVyt9_d",
-        @"9OudkYMCfp21Lluw_0pRBeLa",
-        @"_VKdP0o3luEc9lJq-sLyH6a3",
-        @"BvHVgcoyop4ppmp30IA3LCg_"
+        @{@"prefix": @"172.56.", @"isp": @"T-Mobile"},
+        @{@"prefix": @"172.58.", @"isp": @"T-Mobile"},
+        @{@"prefix": @"172.59.", @"isp": @"T-Mobile"},
+        @{@"prefix": @"174.192.", @"isp": @"T-Mobile"},
+        @{@"prefix": @"174.200.", @"isp": @"T-Mobile"},
+        @{@"prefix": @"174.250.", @"isp": @"T-Mobile"}
     ];
 }
 
-static NSString *getDocumentsFilePath(NSString *fileName) {
-    NSString *docsDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    return [docsDir stringByAppendingPathComponent:fileName];
+static NSArray *getTrustedUserAgents() {
+    return @[
+        @"Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+        @"Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        @"Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+        @"Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+        @"Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+    ];
 }
 
-static NSInteger getCurrentTokenIndex() {
-    NSString *path = getDocumentsFilePath(@"token_index.txt");
-    if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-        NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-        if (content) {
-            NSInteger index = [content integerValue];
-            NSArray *tokens = getTokenList();
-            if (index >= 0 && index < tokens.count) return index;
-        }
+static NSString *getCurrentSessionIP() {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *ip = [defaults stringForKey:kStoredResidentialIPKey];
+    if (!ip || [ip length] == 0) {
+        NSArray *pools = getTMobileIPPools();
+        NSDictionary *selectedPool = pools[arc4random_uniform((uint32_t)pools.count)];
+        NSString *prefix = selectedPool[@"prefix"];
+        ip = [NSString stringWithFormat:@"%@%d.%d", prefix, arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
+        [defaults setObject:ip forKey:kStoredResidentialIPKey];
+        [defaults synchronize];
     }
-    return 0;
+    return ip;
 }
 
-static void saveCurrentTokenIndex(NSInteger index) {
-    NSString *path = getDocumentsFilePath(@"token_index.txt");
-    [([NSString stringWithFormat:@"%ld", (long)index]) writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-}
-
-static NSInteger moveToNextTokenIndex() {
-    NSArray *tokens = getTokenList();
-    NSInteger nextIndex = (getCurrentTokenIndex() + 1) % tokens.count;
-    saveCurrentTokenIndex(nextIndex);
-    return nextIndex;
-}
-
-static NSString *getCurrentTokenValue() {
-    NSArray *tokens = getTokenList();
-    NSInteger index = getCurrentTokenIndex();
-    return (index >= 0 && index < tokens.count) ? tokens[index] : tokens[0];
-}
-
-static NSString *getStoredOrFreshValue(NSString *fileName, NSString * (^generator)(void)) {
-    NSString *path = getDocumentsFilePath(fileName);
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:path]) {
-        NSString *val = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-        if (val && val.length > 0) return val;
+static NSString *getCurrentSessionUserAgent() {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *ua = [defaults stringForKey:kStoredUserAgentKey];
+    if (!ua || [ua length] == 0) {
+        NSArray *agents = getTrustedUserAgents();
+        ua = agents[arc4random_uniform((uint32_t)agents.count)];
+        [defaults setObject:ua forKey:kStoredUserAgentKey];
+        [defaults synchronize];
     }
-    NSString *newVal = generator();
-    [newVal writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    return newVal;
+    return ua;
 }
 
-static NSString *getCurrentIDFA() {
-    return getStoredOrFreshValue(@"spoof_idfa.txt", ^NSString * {
-        return [[NSUUID UUID] UUIDString];
-    });
-}
-
-static NSString *getCurrentVendorID() {
-    return getStoredOrFreshValue(@"spoof_vendor.txt", ^NSString * {
-        return [[NSUUID UUID] UUIDString];
-    });
-}
-
-static NSString *getCurrentDeviceModel() {
-    return getStoredOrFreshValue(@"spoof_model.txt", ^NSString * {
-        NSArray *models = @[@"iPhone17,1", @"iPhone17,2", @"iPhone17,3", @"iPhone17,4", @"iPhone17,5", @"iPhone19,2", @"iPhone19,3", @"iPhone19,4"];
-        return models[arc4random_uniform((uint32_t)models.count)];
-    });
-}
-
-static NSString *getCurrentSystemVersion() {
-    return getStoredOrFreshValue(@"spoof_ios.txt", ^NSString * {
-        NSArray *versions = @[@"17.0", @"17.1", @"17.2", @"17.3", @"17.4", @"17.5", @"17.6", @"17.7", @"18.0", @"18.1", @"18.2", @"18.3", @"18.4", @"18.5", @"18.6"];
-        return versions[arc4random_uniform((uint32_t)versions.count)];
-    });
-}
-
-static NSString *getCurrentNetherlandsCoordinates() {
-    return getStoredOrFreshValue(@"spoof_gps.txt", ^NSString * {
-        double lat = 51.5 + ((double)(arc4random_uniform(170)) / 100.0);
-        double lon = 4.3 + ((double)(arc4random_uniform(250)) / 100.0);
-        return [NSString stringWithFormat:@"%f,%f", lat, lon];
-    });
-}
-
-static NSString *getCurrentTimeZoneName() {
-    return getStoredOrFreshValue(@"spoof_tz.txt", ^NSString * {
-        NSArray *timeZones = @[@"Europe/Amsterdam", @"Europe/Rotterdam", @"Europe/Paris", @"Europe/Berlin", @"Europe/Brussels", @"Europe/Rome"];
-        return timeZones[arc4random_uniform((uint32_t)timeZones.count)];
-    });
-}
-
-static NSString *getCurrentDeviceLanguage() {
-    return getStoredOrFreshValue(@"spoof_lang.txt", ^NSString * {
-        NSArray *languages = @[@"nl", @"en-NL", @"en-GB", @"fr"];
-        return languages[arc4random_uniform((uint32_t)languages.count)];
-    });
-}
-
-static NSString *getCurrentDeviceRegion() {
-    return getStoredOrFreshValue(@"spoof_region.txt", ^NSString * {
-        NSArray *regions = @[@"NL", @"BE", @"FR", @"DE"];
-        return regions[arc4random_uniform((uint32_t)regions.count)];
-    });
-}
-
-static BOOL getStoredTrackingState() {
-    NSString *path = getDocumentsFilePath(@"spoof_tracking.txt");
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if ([fm fileExistsAtPath:path]) {
-        NSString *val = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-        if (val) return [val boolValue];
-    }
-    return NO;
-}
-
-static void saveTrackingState(BOOL allow) {
-    NSString *path = getDocumentsFilePath(@"spoof_tracking.txt");
-    [@(allow ? 1 : 0).stringValue writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-}
-
-static void regenerateAllSpoofedData() {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_idfa.txt") error:nil];
-    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_vendor.txt") error:nil];
-    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_model.txt") error:nil];
-    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_ios.txt") error:nil];
-    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_gps.txt") error:nil];
-    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_tz.txt") error:nil];
-    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_lang.txt") error:nil];
-    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_region.txt") error:nil];
+// توليد إحداثيات جديدة ومختلفة في أتلانتا مع كل عملية تطهير
+static CLLocationCoordinate2D getAtlantaCoordinate() {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    double lat = [defaults doubleForKey:kStoredAtlantaLatitudeKey];
+    double lon = [defaults doubleForKey:kStoredAtlantaLongitudeKey];
     
-    getCurrentIDFA();
-    getCurrentVendorID();
-    getCurrentDeviceModel();
-    getCurrentSystemVersion();
-    getCurrentNetherlandsCoordinates();
-    getCurrentTimeZoneName();
-    getCurrentDeviceLanguage();
-    getCurrentDeviceRegion();
+    if (lat == 0.0 || lon == 0.0) {
+        lat = 33.7485 + ((double)(arc4random_uniform(415)) / 10000.0);
+        lon = -84.4200 + ((double)(arc4random_uniform(320)) / 10000.0);
+        
+        [defaults setDouble:lat forKey:kStoredAtlantaLatitudeKey];
+        [defaults setDouble:lon forKey:kStoredAtlantaLongitudeKey];
+        [defaults synchronize];
+    }
+    return CLLocationCoordinate2DMake(lat, lon);
 }
 
-static void clearAllKeychainAndAddNewItem(BOOL rotateToken) {
+static void clearAllKeychainAndAddNewItem() {
     NSArray *secClasses = @[
         (__bridge id)kSecClassGenericPassword,
         (__bridge id)kSecClassInternetPassword,
@@ -204,8 +103,11 @@ static void clearAllKeychainAndAddNewItem(BOOL rotateToken) {
         NSDictionary *generalQuery = @{ (__bridge id)kSecClass: secClass };
         SecItemDelete((__bridge CFDictionaryRef)generalQuery);
         
-        if (primaryAccessGroup && primaryAccessGroup.length > 0) {
-            NSDictionary *groupQuery = @{ (__bridge id)kSecClass: secClass, (__bridge id)kSecAttrAccessGroup: primaryAccessGroup };
+        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+            NSDictionary *groupQuery = @{
+                (__bridge id)kSecClass: secClass,
+                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
+            };
             SecItemDelete((__bridge CFDictionaryRef)groupQuery);
         }
         
@@ -214,160 +116,190 @@ static void clearAllKeychainAndAddNewItem(BOOL rotateToken) {
             (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
             (__bridge id)kSecReturnPersistentRef: @YES
         }];
-        if (primaryAccessGroup.length > 0) spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+        
+        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+            spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+        }
         
         CFArrayRef result = NULL;
         if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
             NSArray *items = (__bridge NSArray *)result;
             for (id itemRef in items) {
-                SecItemDelete((__bridge CFDictionaryRef)@{(id)kSecValueRef: itemRef});
+                NSDictionary *refQuery = @{ (__bridge id)kSecValueRef: itemRef };
+                SecItemDelete((__bridge CFDictionaryRef)refQuery);
             }
             CFRelease(result);
         }
     }
     
-    if (rotateToken) {
-        moveToNextTokenIndex();
-    }
+    NSString *serviceName = @"app.getsmscode";
+    NSString *accountName = @"tokenKey";
+    NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
     
-    NSString *tokenValue = getCurrentTokenValue();
     NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
     
     NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
         (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: @"app.getsmscode",
-        (__bridge id)kSecAttrAccount: @"tokenKey",
+        (__bridge id)kSecAttrService: serviceName,
+        (__bridge id)kSecAttrAccount: accountName,
         (__bridge id)kSecValueData: tokenData
     }];
-    if (primaryAccessGroup.length > 0) addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+    
+    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+        addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+    }
     
     SecItemDelete((__bridge CFDictionaryRef)addQuery);
-    if (SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL) != errSecSuccess) {
+    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+    
+    if (addStatus != errSecSuccess) {
         [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
         SecItemDelete((__bridge CFDictionaryRef)addQuery);
         SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
     }
 }
 
-static NSString *randomEuropeanIP() {
-    return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
+static NSString *randomNewIDFA() {
+    return [[NSUUID UUID] UUIDString];
 }
 
-void executeFullEnvironmentRefresh(BOOL rotateToken) {
-    @autoreleasepool {
-        NSInteger savedIndex = getCurrentTokenIndex();
-        
-        clearAllKeychainAndAddNewItem(rotateToken);
+static double randomInactivitySeconds() {
+    return (double)(864000 + arc4random_uniform(4320000));
+}
 
+static NSString *generateFreshTimestamp() {
+    NSDate *now = [NSDate date];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSS'+0300'"];
+    return [formatter stringFromDate:now];
+}
+
+// دالة التطهير المحدثة لحذف كل ما يتعلق بـ NSUserDefaults وتوليد هوية جديدة تماماً
+void executeFullEnvironmentRefresh() {
+    @autoreleasepool {
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        
+        // 1. مسح المفاتيح السابقة تماماً لضمان عدم ثباتها
+        [defaults removeObjectForKey:kStoredResidentialIPKey];
+        [defaults removeObjectForKey:kStoredUserAgentKey];
+        [defaults removeObjectForKey:kStoredAtlantaLatitudeKey];
+        [defaults removeObjectForKey:kStoredAtlantaLongitudeKey];
+        
+        [defaults removeObjectForKey:@"device.id.key"];
+        [defaults removeObjectForKey:@"com.google.sso.GeneratedDeviceIdentifier"];
+        [defaults removeObjectForKey:@"AppsFlyerUserId"];
+        [defaults removeObjectForKey:@"com.firebase.installations.app_id_to_fiid_enforcement"];
+        
+        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+        if (bundleIdentifier) {
+            [defaults removePersistentDomainForName:bundleIdentifier];
+        }
+        
+        [defaults synchronize];
+
+        // 2. تطهير الـ Keychain
+        clearAllKeychainAndAddNewItem();
+
+        // 3. مسح الملفات والمجلدات من الجذور
         NSFileManager *fileManager = [NSFileManager defaultManager];
         NSString *homeDir = NSHomeDirectory();
         
-        NSString *documentsDir = [homeDir stringByAppendingPathComponent:@"Documents"];
-        if ([fileManager fileExistsAtPath:documentsDir]) {
-            NSArray *contents = [fileManager contentsOfDirectoryAtPath:documentsDir error:nil];
-            for (NSString *file in contents) {
-                if ([file isEqualToString:@"token_index.txt"] || [file hasPrefix:@"spoof_"]) {
-                    continue;
-                }
-                [fileManager removeItemAtPath:[documentsDir stringByAppendingPathComponent:file] error:nil];
-            }
+        NSError *error = nil;
+        NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
+        for (NSString *item in homeContents) {
+            NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
+            [fileManager removeItemAtPath:fullPath error:&error];
         }
         
-        NSArray *targetSubDirs = @[
-            @"Library/Caches",
-            @"Library/Application Support",
-            @"Library/Preferences",
-            @"Library/Cookies",
-            @"Library/WebKit",
-            @"Library/Saved Application State",
-            @"tmp"
-        ];
-        
-        for (NSString *subDir in targetSubDirs) {
+        NSArray *subDirs = @[@"Documents", @"Library/Caches", @"Library/Application Support", @"Library/Preferences", @"Library/Cookies", @"tmp"];
+        for (NSString *subDir in subDirs) {
             NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
             if ([fileManager fileExistsAtPath:targetPath]) {
                 NSArray *contents = [fileManager contentsOfDirectoryAtPath:targetPath error:nil];
                 for (NSString *file in contents) {
-                    [fileManager removeItemAtPath:[targetPath stringByAppendingPathComponent:file] error:nil];
+                    NSString *filePath = [targetPath stringByAppendingPathComponent:file];
+                    [fileManager removeItemAtPath:filePath error:nil];
                 }
             }
         }
-
-        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-        if (bundleIdentifier) {
-            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-        }
         
-        if (!rotateToken) {
-            saveCurrentTokenIndex(savedIndex);
+        NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
+        if ([fileManager fileExistsAtPath:groupDirBase]) {
+            NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
+            for (NSString *groupFolder in groupFolders) {
+                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
+                [fileManager removeItemAtPath:groupPath error:nil];
+            }
         }
 
-        regenerateAllSpoofedData();
-
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        NSString *freshIDFA = getCurrentIDFA();
+        // 4. توليد البيانات الجديدة وزرعها في NSUserDefaults
+        NSString *freshID = randomNewIDFA();
+        NSString *freshDate = generateFreshTimestamp();
+        double dynamicInactivityTime = randomInactivitySeconds();
         
-        [defaults setObject:freshIDFA forKey:@"device.id.key"];
-        [defaults setObject:freshIDFA forKey:@"com.google.sso.GeneratedDeviceIdentifier"];
-        [defaults setObject:freshIDFA forKey:@"AppsFlyerUserId"];
-        [defaults setInteger:(getStoredTrackingState() ? 3 : 2) forKey:@"ATT_Tracking_Status"];
+        [defaults setObject:freshID forKey:@"device.id.key"];
+        [defaults setObject:freshID forKey:@"com.google.sso.GeneratedDeviceIdentifier"];
+        [defaults setObject:freshID forKey:@"AppsFlyerUserId"];
+        [defaults setObject:freshID forKey:@"com.firebase.installations.app_id_to_fiid_enforcement"];
+        
+        [defaults setInteger:2 forKey:@"ATT_Tracking_Status"];
+        [defaults setInteger:0 forKey:@"ump_status"];
+        [defaults setInteger:0 forKey:@"IABTCF_gdprApplies"];
+        
+        [defaults setInteger:1 forKey:@"AppsFlyerRealLaunchCounter"];
+        [defaults setInteger:0 forKey:@"AppsFlyerReinstallCounter"];
+        [defaults setInteger:1 forKey:@"AppsFlyerLaunchKey"];
+        
+        [defaults setObject:freshDate forKey:@"AppsFlyerInstallDate"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerFirstLaunchDate"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerInstallTimestamp"];
+        
+        [defaults setDouble:0.0 forKey:@"AppsFlyerLastSessionDuration"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"AppsFlyerTimePassedSincePrevLaunch"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"time_passed_since_last_session"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"last_activity_interval"];
+        
+        // إجبار التوليد الفوري لهوية جديدة (T-Mobile IP + User-Agent + إحداثيات أتلانتا جديدة)
+        (void)getCurrentSessionIP();
+        (void)getCurrentSessionUserAgent();
+        (void)getAtlantaCoordinate();
+        
         [defaults synchronize];
+        
+        NSLog(@">>> [Dynamic-Refresh] WIPE COMPLETE & FRESH NSUSERDEFAULTS IDENTITY GENERATED.");
     }
 }
 
-void setTrackingState(BOOL allowTracking) {
-    @autoreleasepool {
-        saveTrackingState(allowTracking);
-        
-        NSFileManager *fm = [NSFileManager defaultManager];
-        [fm removeItemAtPath:getDocumentsFilePath(@"spoof_idfa.txt") error:nil];
-        getCurrentIDFA();
-        
-        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        NSString *freshIDFA = getCurrentIDFA();
-        [defaults setObject:freshIDFA forKey:@"device.id.key"];
-        [defaults setInteger:(allowTracking ? 3 : 2) forKey:@"ATT_Tracking_Status"];
-        [defaults synchronize];
-    }
-}
-
+// واجهة الزر العائم
 @interface FloatingButtonWindow : UIWindow
-@property (nonatomic, strong) UIView *contentContainerView;
+@property (nonatomic, strong) UIButton *targetButton;
 @end
 
 @implementation FloatingButtonWindow
 - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!self.contentContainerView) return NO;
-    CGPoint containerPoint = [self convertPoint:point toView:self.contentContainerView];
-    return [self.contentContainerView pointInside:containerPoint withEvent:event];
+    if (!self.targetButton) return NO;
+    CGPoint buttonPoint = [self convertPoint:point toView:self.targetButton];
+    return [self.targetButton pointInside:buttonPoint withEvent:event];
 }
 @end
 
 @interface FloatingButtonManager : NSObject
 + (instancetype)sharedInstance;
 - (void)showFloatingButton;
-- (void)updateTokenInfoLabel;
 @end
 
 @implementation FloatingButtonManager {
     FloatingButtonWindow *floatingWindow;
-    UILabel *tokenInfoLabel;
+    UIButton *refreshButton;
 }
 
 + (instancetype)sharedInstance {
     static FloatingButtonManager *sharedInstance = nil;
     static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ sharedInstance = [[FloatingButtonManager alloc] init]; });
+    dispatch_once(&onceToken, ^{
+        sharedInstance = [[FloatingButtonManager alloc] init];
+    });
     return sharedInstance;
-}
-
-- (void)updateTokenInfoLabel {
-    if (!tokenInfoLabel) return;
-    NSArray *tokens = getTokenList();
-    NSInteger currentIndex = getCurrentTokenIndex();
-    NSString *currentToken = tokens[currentIndex];
-    BOOL trackingStatus = getStoredTrackingState();
-    tokenInfoLabel.text = [NSString stringWithFormat:@"Token %ld/%ld [%@] | Trk: %@", (long)(currentIndex + 1), (long)tokens.count, [currentToken substringToIndex:MIN(4, currentToken.length)], trackingStatus ? @"ON" : @"OFF"];
 }
 
 - (void)showFloatingButton {
@@ -381,7 +313,12 @@ void setTrackingState(BOOL allowTracking) {
         }
     }
     
-    self->floatingWindow = targetScene ? [[FloatingButtonWindow alloc] initWithWindowScene:targetScene] : [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    if (targetScene) {
+        self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
+    } else {
+        self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    }
+    
     self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
     self->floatingWindow.backgroundColor = [UIColor clearColor];
     
@@ -389,135 +326,58 @@ void setTrackingState(BOOL allowTracking) {
     emptyVC.view.backgroundColor = [UIColor clearColor];
     self->floatingWindow.rootViewController = emptyVC;
     
-    CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-    UIView *containerView = [[UIView alloc] initWithFrame:CGRectMake(screenWidth - 165, 45, 155, 215)];
-    containerView.backgroundColor = [UIColor clearColor];
-    self->floatingWindow.contentContainerView = containerView;
+    self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
+    [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
+    self->refreshButton.layer.cornerRadius = 20;
+    self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
+    self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
+    self->refreshButton.layer.shadowOpacity = 0.4;
+    self->refreshButton.layer.shadowRadius = 4;
     
-    UIButton *btnRotate = [UIButton buttonWithType:UIButtonTypeSystem];
-    [btnRotate setTitle:@"🔄 تطهير الشبكة + توكن" forState:UIControlStateNormal];
-    [btnRotate setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btnRotate.backgroundColor = [UIColor colorWithRed:0.0 green:0.47 blue:1.0 alpha:0.9];
-    btnRotate.titleLabel.font = [UIFont boldSystemFontOfSize:11];
-    btnRotate.layer.cornerRadius = 10;
-    btnRotate.frame = CGRectMake(0, 0, 155, 32);
-    [btnRotate addTarget:self action:@selector(handleRotateRefreshTapped) forControlEvents:UIControlEventTouchUpInside];
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    CGFloat screenWidth = screenBounds.size.width;
+    self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
     
-    UIButton *btnSame = [UIButton buttonWithType:UIButtonTypeSystem];
-    [btnSame setTitle:@"⚡ تطهير الشبكة (نفس)" forState:UIControlStateNormal];
-    [btnSame setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btnSame.backgroundColor = [UIColor colorWithRed:0.2 green:0.7 blue:0.3 alpha:0.9];
-    btnSame.titleLabel.font = [UIFont boldSystemFontOfSize:11];
-    btnSame.layer.cornerRadius = 10;
-    btnSame.frame = CGRectMake(0, 36, 155, 32);
-    [btnSame addTarget:self action:@selector(handleSameRefreshTapped) forControlEvents:UIControlEventTouchUpInside];
-
-    UIButton *btnAllowTrack = [UIButton buttonWithType:UIButtonTypeSystem];
-    [btnAllowTrack setTitle:@"🟢 السماح بالتتبع" forState:UIControlStateNormal];
-    [btnAllowTrack setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btnAllowTrack.backgroundColor = [UIColor colorWithRed:0.1 green:0.75 blue:0.35 alpha:0.9];
-    btnAllowTrack.titleLabel.font = [UIFont boldSystemFontOfSize:11];
-    btnAllowTrack.layer.cornerRadius = 10;
-    btnAllowTrack.frame = CGRectMake(0, 72, 155, 32);
-    [btnAllowTrack addTarget:self action:@selector(handleAllowTrackingTapped) forControlEvents:UIControlEventTouchUpInside];
-
-    UIButton *btnDenyTrack = [UIButton buttonWithType:UIButtonTypeSystem];
-    [btnDenyTrack setTitle:@"🔴 إيقاف ورفض التتبع" forState:UIControlStateNormal];
-    [btnDenyTrack setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btnDenyTrack.backgroundColor = [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:0.9];
-    btnDenyTrack.titleLabel.font = [UIFont boldSystemFontOfSize:11];
-    btnDenyTrack.layer.cornerRadius = 10;
-    btnDenyTrack.frame = CGRectMake(0, 108, 155, 32);
-    [btnDenyTrack addTarget:self action:@selector(handleDenyTrackingTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
     
-    tokenInfoLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 144, 155, 65)];
-    tokenInfoLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.8];
-    tokenInfoLabel.textColor = [UIColor yellowColor];
-    tokenInfoLabel.font = [UIFont systemFontOfSize:9];
-    tokenInfoLabel.textAlignment = NSTextAlignmentCenter;
-    tokenInfoLabel.numberOfLines = 3;
-    tokenInfoLabel.layer.cornerRadius = 8;
-    tokenInfoLabel.clipsToBounds = YES;
-    
-    [self updateTokenInfoLabel];
-    [containerView addSubview:btnRotate];
-    [containerView addSubview:btnSame];
-    [containerView addSubview:btnAllowTrack];
-    [containerView addSubview:btnDenyTrack];
-    [containerView addSubview:tokenInfoLabel];
-    [emptyVC.view addSubview:containerView];
+    self->floatingWindow.targetButton = self->refreshButton;
+    [emptyVC.view addSubview:self->refreshButton];
     [self->floatingWindow setHidden:NO];
 }
 
-- (void)showSuccessAlertFromRoot:(UIViewController * _Nonnull)rootVC message:(NSString * _Nonnull)msg {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) { exit(0); }]];
-    [rootVC presentViewController:alert animated:YES completion:nil];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ exit(0); });
+- (void)showSuccessAlertFromRoot:(UIViewController *)rootVC {
+    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
+                                                                           message:@"تم مسح التخزين بالكامل وتوليد هوية T-Mobile وموقع جديد في أتلانتا بنجاح." 
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+    
+    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        exit(0);
+    }]];
+    
+    [rootVC presentViewController:successAlert animated:YES completion:nil];
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        exit(0);
+    });
 }
 
-- (void)handleRotateRefreshTapped {
+- (void)handleRefreshButtonTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير الشبكة والهوية" message:@"جاري مسح الكوكيز، الويب، وتوليد هويات جديدة..." preferredStyle:UIAlertControllerStyleAlert];
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
+                                                               message:@"جاري مسح بيانات NSUserDefaults وتوليد آبيات جديدة..." 
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    
     __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
-        executeFullEnvironmentRefresh(YES);
+        executeFullEnvironmentRefresh();
+        
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [alert dismissViewControllerAnimated:YES completion:^{
                 if (weakSelf) {
-                    [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تطهير الشبكة وتغيير التوكن بنجاح."];
-                }
-            }];
-        });
-    }];
-}
-
-- (void)handleSameRefreshTapped {
-    UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير الشبكة (نفس)" message:@"جاري مسح الكوكيز والبيانات المؤقتة للشبكة..." preferredStyle:UIAlertControllerStyleAlert];
-    __weak typeof(self) weakSelf = self;
-    [rootVC presentViewController:alert animated:YES completion:^{
-        executeFullEnvironmentRefresh(NO);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                if (weakSelf) {
-                    [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تطهير الشبكة والذاكرة بنجاح."];
-                }
-            }];
-        });
-    }];
-}
-
-- (void)handleAllowTrackingTapped {
-    UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"السماح بالتتبع" message:@"جاري تفعيل التتبع وتوليد معرف تتبع جديد..." preferredStyle:UIAlertControllerStyleAlert];
-    __weak typeof(self) weakSelf = self;
-    [rootVC presentViewController:alert animated:YES completion:^{
-        setTrackingState(YES);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                if (weakSelf) {
-                    [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم السماح بالتتبع وتوليد معرف جديد بنجاح."];
-                }
-            }];
-        });
-    }];
-}
-
-- (void)handleDenyTrackingTapped {
-    UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"إيقاف التتبع" message:@"جاري رفض وإيقاف التتبع وتحديث الهوية..." preferredStyle:UIAlertControllerStyleAlert];
-    __weak typeof(self) weakSelf = self;
-    [rootVC presentViewController:alert animated:YES completion:^{
-        setTrackingState(NO);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                if (weakSelf) {
-                    [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم إيقاف التتبع وتحديث الهوية بنجاح."];
+                    [weakSelf showSuccessAlertFromRoot:rootVC];
                 }
             }];
         });
@@ -532,108 +392,170 @@ void setTrackingState(BOOL allowTracking) {
     });
 }
 
-// ==========================================
-// هوكات تزوير النظام، الشبكة، والهويات
-// ==========================================
+// الهوكات الأساسية
+%hook ATTrackingManager
++ (NSUInteger)trackingAuthorizationStatus {
+    return 2;
+}
+%end
 
 %hook UIDevice
 - (NSUUID *)identifierForVendor {
-    return [[NSUUID alloc] initWithUUIDString:getCurrentVendorID()];
-}
-- (NSString *)systemVersion {
-    return getCurrentSystemVersion();
-}
-- (NSString *)model {
-    return @"iPhone";
-}
-%end
-
-%hook NSObject
-- (NSString *)machine {
-    return getCurrentDeviceModel();
-}
-%end
-
-%hook CLLocationManager
-- (CLLocation *)location {
-    NSArray *parts = [getCurrentNetherlandsCoordinates() componentsSeparatedByString:@","];
-    if (parts.count == 2) {
-        double lat = [parts[0] doubleValue];
-        double lon = [parts[1] doubleValue];
-        return [[CLLocation alloc] initWithLatitude:lat longitude:lon];
-    }
-    return %orig;
-}
-%end
-
-%hook NSTimeZone
-+ (NSTimeZone *)localTimeZone {
-    NSTimeZone *tz = [NSTimeZone timeZoneWithName:getCurrentTimeZoneName()];
-    return tz ? tz : %orig;
-}
-+ (NSTimeZone *)systemTimeZone {
-    NSTimeZone *tz = [NSTimeZone timeZoneWithName:getCurrentTimeZoneName()];
-    return tz ? tz : %orig;
-}
-%end
-
-%hook NSLocale
-+ (NSLocale *)currentLocale {
-    return [[NSLocale alloc] initWithLocaleIdentifier:getCurrentDeviceRegion()];
-}
-- (NSString *)localeIdentifier {
-    return getCurrentDeviceRegion();
-}
-%end
-
-%hook NSBundle
-+ (NSArray *)preferredLanguages {
-    return @[getCurrentDeviceLanguage()];
+    return [NSUUID UUID];
 }
 %end
 
 %hook ASIdentifierManager
 - (NSUUID *)advertisingIdentifier {
-    return [[NSUUID alloc] initWithUUIDString:getCurrentIDFA()];
+    return [NSUUID UUID];
 }
 - (BOOL)isAdvertisingTrackingEnabled {
-    return getStoredTrackingState();
+    return NO;
 }
 %end
 
-%hook ATTrackingManager
-+ (NSUInteger)trackingAuthorizationStatus {
-    return getStoredTrackingState() ? 3 : 2;
+// هوكات الموقع الجغرافي لأتلانتا
+%hook CLLocation
+- (CLLocationCoordinate2D)coordinate {
+    return getAtlantaCoordinate();
 }
 %end
+
+%hook CLLocationManager
+- (CLLocation *)location {
+    CLLocationCoordinate2D coord = getAtlantaCoordinate();
+    return [[CLLocation alloc] initWithLatitude:coord.latitude longitude:coord.longitude];
+}
+%end
+
+// دالة الحقن المضمونة 100%
+static void injectTMobileAndUA(NSMutableURLRequest *request) {
+    if (![request isKindOfClass:[NSMutableURLRequest class]]) return;
+    
+    NSString *currentIP = getCurrentSessionIP();
+    NSString *currentUA = getCurrentSessionUserAgent();
+    
+    [request setValue:currentIP forHTTPHeaderField:@"X-Forwarded-For"];
+    [request setValue:currentIP forHTTPHeaderField:@"Client-IP"];
+    [request setValue:currentIP forHTTPHeaderField:@"True-Client-IP"];
+    [request setValue:currentIP forHTTPHeaderField:@"X-Client-IP"];
+    [request setValue:currentIP forHTTPHeaderField:@"CF-Connecting-IP"];
+    [request setValue:currentUA forHTTPHeaderField:@"User-Agent"];
+}
 
 %hook NSMutableURLRequest
+- (instancetype)initWithURL:(NSURL *)URL {
+    NSMutableURLRequest *req = %orig;
+    injectTMobileAndUA(req);
+    return req;
+}
+
+- (instancetype)initWithURL:(NSURL *)URL cachePolicy:(NSURLRequestCachePolicy)cachePolicy timeoutInterval:(NSTimeInterval)timeoutInterval {
+    NSMutableURLRequest *req = %orig;
+    injectTMobileAndUA(req);
+    return req;
+}
+
 - (void)setValue:(NSString *)value forHTTPHeaderField:(NSString *)field {
-    if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
-        value = randomEuropeanIP();
+    NSString *upperField = [field uppercaseString];
+    if ([upperField isEqualToString:@"X-FORWARDED-FOR"] || 
+        [upperField isEqualToString:@"CLIENT-IP"] || 
+        [upperField isEqualToString:@"TRUE-CLIENT-IP"] || 
+        [upperField isEqualToString:@"X-CLIENT-IP"] ||
+        [upperField isEqualToString:@"CF-CONNECTING-IP"]) {
+        value = getCurrentSessionIP();
+    } else if ([upperField isEqualToString:@"USER-AGENT"]) {
+        value = getCurrentSessionUserAgent();
     }
     %orig(value, field);
+}
+
+- (void)setAllHTTPHeaderFields:(NSDictionary<NSString *,NSString *> *)headers {
+    NSMutableDictionary *mutableHeaders = [headers mutableCopy];
+    if (!mutableHeaders) {
+        mutableHeaders = [NSMutableDictionary dictionary];
+    }
+    
+    NSString *currentIP = getCurrentSessionIP();
+    NSString *currentUA = getCurrentSessionUserAgent();
+    
+    mutableHeaders[@"X-Forwarded-For"] = currentIP;
+    mutableHeaders[@"Client-IP"] = currentIP;
+    mutableHeaders[@"True-Client-IP"] = currentIP;
+    mutableHeaders[@"User-Agent"] = currentUA;
+    
+    %orig(mutableHeaders);
+}
+%end
+
+%hook NSURLRequest
+- (instancetype)initWithURL:(NSURL *)URL {
+    id req = %orig;
+    if ([req isKindOfClass:[NSMutableURLRequest class]]) {
+        injectTMobileAndUA((NSMutableURLRequest *)req);
+    }
+    return req;
+}
+%end
+
+%hook NSURLSessionConfiguration
+- (void)setHTTPAdditionalHeaders:(NSDictionary *)headers {
+    NSMutableDictionary *mutableHeaders = headers ? [headers mutableCopy] : [NSMutableDictionary dictionary];
+    NSString *currentIP = getCurrentSessionIP();
+    NSString *currentUA = getCurrentSessionUserAgent();
+    
+    mutableHeaders[@"X-Forwarded-For"] = currentIP;
+    mutableHeaders[@"Client-IP"] = currentIP;
+    mutableHeaders[@"True-Client-IP"] = currentIP;
+    mutableHeaders[@"User-Agent"] = currentUA;
+    
+    %orig(mutableHeaders);
 }
 %end
 
 %hook ActivatorAdService
-- (BOOL)isReady { return YES; }
-- (BOOL)isAdReady { return YES; }
-- (BOOL)canShowAd { return YES; }
-- (BOOL)hasAdLoaded { return YES; }
-- (void)loadAd { 
-    %orig; 
+
+- (BOOL)isReady {
+    return YES;
 }
-- (void)showRewardAd { 
-    %orig; 
+
+- (BOOL)isAdReady {
+    return YES;
 }
-- (void)presentAdFromViewController:(UIViewController *)viewController { 
-    %orig; 
+
+- (BOOL)canShowAd {
+    return YES;
 }
+
+- (BOOL)hasAdLoaded {
+    return YES;
+}
+
+- (void)loadAd {
+    %orig;
+}
+
+- (void)showRewardAd {
+    @try {
+        %orig;
+    } @catch (NSException *exception) {
+        NSLog(@">>> [Dynamic-Refresh] Exception in showRewardAd: %@", exception.reason);
+    }
+}
+
+- (void)presentAdFromViewController:(UIViewController *)viewController {
+    @try {
+        %orig;
+    } @catch (NSException *exception) {
+        NSLog(@">>> [Dynamic-Refresh] Exception caught in presentAdFromViewController: %@", exception.reason);
+    }
+}
+
 - (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
     id targetSelf = self;
     if ([targetSelf respondsToSelector:@selector(loadAd)]) {
         [targetSelf loadAd];
     }
 }
+
 %end
