@@ -17,6 +17,7 @@
 @end
 
 extern void executeFullEnvironmentRefresh(BOOL rotateToken);
+extern void setTrackingState(BOOL allowTracking);
 
 // قائمة التوكنات الثابتة (25 توكن)
 static NSArray<NSString *> *getTokenList() {
@@ -49,7 +50,6 @@ static NSArray<NSString *> *getTokenList() {
     ];
 }
 
-// مسار ملفات الحفظ داخل مجلد Documents (مستثناة من التطهير)
 static NSString *getDocumentsFilePath(NSString *fileName) {
     NSString *docsDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     return [docsDir stringByAppendingPathComponent:fileName];
@@ -86,7 +86,6 @@ static NSString *getCurrentTokenValue() {
     return (index >= 0 && index < tokens.count) ? tokens[index] : tokens[0];
 }
 
-// إدارة وتخزين المعرفات والبيانات الوهمية
 static NSString *getStoredOrFreshValue(NSString *fileName, NSString * (^generator)(void)) {
     NSString *path = getDocumentsFilePath(fileName);
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -111,59 +110,35 @@ static NSString *getCurrentVendorID() {
     });
 }
 
-// توليد موديل جهاز عشوائي لأحدث إصدارات آخر سنتين (2025 - 2026)
 static NSString *getCurrentDeviceModel() {
     return getStoredOrFreshValue(@"spoof_model.txt", ^NSString * {
-        NSArray *models = @[
-            @"iPhone17,1", // iPhone 17 Pro
-            @"iPhone17,2", // iPhone 17 Pro Max
-            @"iPhone17,3", // iPhone 17
-            @"iPhone17,4", // iPhone Air
-            @"iPhone17,5", // iPhone 17e
-            @"iPhone19,2", // iPhone 18 Pro
-            @"iPhone19,3", // iPhone 18 Pro Max
-            @"iPhone19,4"  // iPhone Duo (Foldable)
-        ];
+        NSArray *models = @[@"iPhone17,1", @"iPhone17,2", @"iPhone17,3", @"iPhone17,4", @"iPhone17,5", @"iPhone19,2", @"iPhone19,3", @"iPhone19,4"];
         return models[arc4random_uniform((uint32_t)models.count)];
     });
 }
 
-// توليد إصدار نظام تشغيل عشوائي لإصدارات iOS 17 و iOS 18 فقط
 static NSString *getCurrentSystemVersion() {
     return getStoredOrFreshValue(@"spoof_ios.txt", ^NSString * {
-        NSArray *versions = @[
-            @"17.0", @"17.1", @"17.2", @"17.3", @"17.4", @"17.5", @"17.6", @"17.7",
-            @"18.0", @"18.1", @"18.2", @"18.3", @"18.4", @"18.5", @"18.6"
-        ];
+        NSArray *versions = @[@"17.0", @"17.1", @"17.2", @"17.3", @"17.4", @"17.5", @"17.6", @"17.7", @"18.0", @"18.1", @"18.2", @"18.3", @"18.4", @"18.5", @"18.6"];
         return versions[arc4random_uniform((uint32_t)versions.count)];
     });
 }
 
-// توليد إحداثيات GPS عشوائية داخل هولندا
 static NSString *getCurrentNetherlandsCoordinates() {
     return getStoredOrFreshValue(@"spoof_gps.txt", ^NSString * {
-        double lat = 51.5 + ((double)(arc4random_uniform(170)) / 100.0); // 51.50 - 53.20
-        double lon = 4.3 + ((double)(arc4random_uniform(250)) / 100.0);  // 4.30 - 6.80
+        double lat = 51.5 + ((double)(arc4random_uniform(170)) / 100.0);
+        double lon = 4.3 + ((double)(arc4random_uniform(250)) / 100.0);
         return [NSString stringWithFormat:@"%f,%f", lat, lon];
     });
 }
 
-// توليد منطقة زمنية أوروبية عشوائية
 static NSString *getCurrentTimeZoneName() {
     return getStoredOrFreshValue(@"spoof_tz.txt", ^NSString * {
-        NSArray *timeZones = @[
-            @"Europe/Amsterdam",
-            @"Europe/Rotterdam",
-            @"Europe/Paris",
-            @"Europe/Berlin",
-            @"Europe/Brussels",
-            @"Europe/Rome"
-        ];
+        NSArray *timeZones = @[@"Europe/Amsterdam", @"Europe/Rotterdam", @"Europe/Paris", @"Europe/Berlin", @"Europe/Brussels", @"Europe/Rome"];
         return timeZones[arc4random_uniform((uint32_t)timeZones.count)];
     });
 }
 
-// توليد لغة عشوائية للجهاز (الهولندية أو الإنجليزية الأوروبية)
 static NSString *getCurrentDeviceLanguage() {
     return getStoredOrFreshValue(@"spoof_lang.txt", ^NSString * {
         NSArray *languages = @[@"nl", @"en-NL", @"en-GB", @"fr"];
@@ -171,7 +146,6 @@ static NSString *getCurrentDeviceLanguage() {
     });
 }
 
-// توليد منطقة جغرافية عشوائية للجهاز (هولندا أو دول أوروبية مجاورة)
 static NSString *getCurrentDeviceRegion() {
     return getStoredOrFreshValue(@"spoof_region.txt", ^NSString * {
         NSArray *regions = @[@"NL", @"BE", @"FR", @"DE"];
@@ -179,7 +153,21 @@ static NSString *getCurrentDeviceRegion() {
     });
 }
 
-// تجديد كافة البصمات والمعلومات عند التطهير
+static BOOL getStoredTrackingState() {
+    NSString *path = getDocumentsFilePath(@"spoof_tracking.txt");
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:path]) {
+        NSString *val = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+        if (val) return [val boolValue];
+    }
+    return NO;
+}
+
+static void saveTrackingState(BOOL allow) {
+    NSString *path = getDocumentsFilePath(@"spoof_tracking.txt");
+    [@(allow ? 1 : 0).stringValue writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 static void regenerateAllSpoofedData() {
     NSFileManager *fm = [NSFileManager defaultManager];
     [fm removeItemAtPath:getDocumentsFilePath(@"spoof_idfa.txt") error:nil];
@@ -201,7 +189,6 @@ static void regenerateAllSpoofedData() {
     getCurrentDeviceRegion();
 }
 
-// 1. حذف جميع عناصر الـ Keychain بالكامل وإدراج التوكن
 static void clearAllKeychainAndAddNewItem(BOOL rotateToken) {
     NSArray *secClasses = @[
         (__bridge id)kSecClassGenericPassword,
@@ -266,7 +253,7 @@ static NSString *randomEuropeanIP() {
     return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
 }
 
-// 2. دالة تنظيف شاملة مع تزوير وتغيير كافة البيانات وموقع هولندا واللغة والمنطقة
+// دالة التطهير الجذري الشامل (تشمل الكاش، الكوكيز، الويب، والشبكة بنسبة 100%)
 void executeFullEnvironmentRefresh(BOOL rotateToken) {
     @autoreleasepool {
         NSInteger savedIndex = getCurrentTokenIndex();
@@ -287,8 +274,18 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             }
         }
         
-        NSArray *subDirs = @[@"Library/Caches", @"Library/Application Support", @"Library/Preferences", @"Library/Cookies", @"tmp"];
-        for (NSString *subDir in subDirs) {
+        // مسح جذري لكل ما يخص الذاكرة المؤقتة، الكوكيز، جلسات الشبكة، والـ WebKit
+        NSArray *targetSubDirs = @[
+            @"Library/Caches",
+            @"Library/Application Support",
+            @"Library/Preferences",
+            @"Library/Cookies",
+            @"Library/WebKit",
+            @"Library/Saved Application State",
+            @"tmp"
+        ];
+        
+        for (NSString *subDir in targetSubDirs) {
             NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
             if ([fileManager fileExistsAtPath:targetPath]) {
                 NSArray *contents = [fileManager contentsOfDirectoryAtPath:targetPath error:nil];
@@ -315,14 +312,29 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
         [defaults setObject:freshIDFA forKey:@"device.id.key"];
         [defaults setObject:freshIDFA forKey:@"com.google.sso.GeneratedDeviceIdentifier"];
         [defaults setObject:freshIDFA forKey:@"AppsFlyerUserId"];
-        [defaults setInteger:2 forKey:@"ATT_Tracking_Status"];
+        [defaults setInteger:(getStoredTrackingState() ? 3 : 2) forKey:@"ATT_Tracking_Status"];
         [defaults synchronize];
         
-        NSLog(@">>> [Refresh] Environment wiped, Netherlands location, Language, Region & iOS spoofed.");
+        NSLog(@">>> [Network & Deep Clean] All network cookies, webkit storage, and traces completely wiped.");
     }
 }
 
-// 3. نافذة الزر العائم (أعلى يمين الشاشة)
+void setTrackingState(BOOL allowTracking) {
+    @autoreleasepool {
+        saveTrackingState(allowTracking);
+        
+        NSFileManager *fm = [NSFileManager defaultManager];
+        [fm removeItemAtPath:getDocumentsFilePath(@"spoof_idfa.txt") error:nil];
+        getCurrentIDFA();
+        
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        NSString *freshIDFA = getCurrentIDFA();
+        [defaults setObject:freshIDFA forKey:@"device.id.key"];
+        [defaults setInteger:(allowTracking ? 3 : 2) forKey:@"ATT_Tracking_Status"];
+        [defaults synchronize];
+    }
+}
+
 @interface FloatingButtonWindow : UIWindow
 @property (nonatomic, strong) UIView *contentContainerView;
 @end
@@ -358,7 +370,8 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
     NSArray *tokens = getTokenList();
     NSInteger currentIndex = getCurrentTokenIndex();
     NSString *currentToken = tokens[currentIndex];
-    tokenInfoLabel.text = [NSString stringWithFormat:@"Token %ld/%ld: %@...", (long)(currentIndex + 1), (long)tokens.count, [currentToken substringToIndex:MIN(6, currentToken.length)]];
+    BOOL trackingStatus = getStoredTrackingState();
+    tokenInfoLabel.text = [NSString stringWithFormat:@"Token %ld/%ld [%@] | Trk: %@", (long)(currentIndex + 1), (long)tokens.count, [currentToken substringToIndex:MIN(4, currentToken.length)], trackingStatus ? @"ON" : @"OFF"];
 }
 
 - (void)showFloatingButton {
@@ -381,40 +394,60 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
     self->floatingWindow.rootViewController = emptyVC;
     
     CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
-    UIView *containerView = [[UIView alloc] initWithFrame:CGRectMake(screenWidth - 160, 50, 150, 135)];
+    UIView *containerView = [[UIView alloc] initWithFrame:CGRectMake(screenWidth - 165, 45, 155, 215)];
     containerView.backgroundColor = [UIColor clearColor];
     self->floatingWindow.contentContainerView = containerView;
     
     UIButton *btnRotate = [UIButton buttonWithType:UIButtonTypeSystem];
-    [btnRotate setTitle:@"🔄 تطهير + توكن تالي" forState:UIControlStateNormal];
+    [btnRotate setTitle:@"🔄 تطهير الشبكة + توكن" forState:UIControlStateNormal];
     [btnRotate setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     btnRotate.backgroundColor = [UIColor colorWithRed:0.0 green:0.47 blue:1.0 alpha:0.9];
-    btnRotate.titleLabel.font = [UIFont boldSystemFontOfSize:12];
-    btnRotate.layer.cornerRadius = 12;
-    btnRotate.frame = CGRectMake(0, 0, 150, 36);
+    btnRotate.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+    btnRotate.layer.cornerRadius = 10;
+    btnRotate.frame = CGRectMake(0, 0, 155, 32);
     [btnRotate addTarget:self action:@selector(handleRotateRefreshTapped) forControlEvents:UIControlEventTouchUpInside];
     
     UIButton *btnSame = [UIButton buttonWithType:UIButtonTypeSystem];
-    [btnSame setTitle:@"⚡ تطهير (نفس التوكن)" forState:UIControlStateNormal];
+    [btnSame setTitle:@"⚡ تطهير الشبكة (نفس)" forState:UIControlStateNormal];
     [btnSame setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     btnSame.backgroundColor = [UIColor colorWithRed:0.2 green:0.7 blue:0.3 alpha:0.9];
-    btnSame.titleLabel.font = [UIFont boldSystemFontOfSize:12];
-    btnSame.layer.cornerRadius = 12;
-    btnSame.frame = CGRectMake(0, 42, 150, 36);
+    btnSame.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+    btnSame.layer.cornerRadius = 10;
+    btnSame.frame = CGRectMake(0, 36, 155, 32);
     [btnSame addTarget:self action:@selector(handleSameRefreshTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *btnAllowTrack = [UIButton buttonWithType:UIButtonTypeSystem];
+    [btnAllowTrack setTitle:@"🟢 السماح بالتتبع" forState:UIControlStateNormal];
+    [btnAllowTrack setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btnAllowTrack.backgroundColor = [UIColor colorWithRed:0.1 green:0.75 blue:0.35 alpha:0.9];
+    btnAllowTrack.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+    btnAllowTrack.layer.cornerRadius = 10;
+    btnAllowTrack.frame = CGRectMake(0, 72, 155, 32);
+    [btnAllowTrack addTarget:self action:@selector(handleAllowTrackingTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *btnDenyTrack = [UIButton buttonWithType:UIButtonTypeSystem];
+    [btnDenyTrack setTitle:@"🔴 إيقاف ورفض التتبع" forState:UIControlStateNormal];
+    [btnDenyTrack setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    btnDenyTrack.backgroundColor = [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:0.9];
+    btnDenyTrack.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+    btnDenyTrack.layer.cornerRadius = 10;
+    btnDenyTrack.frame = CGRectMake(0, 108, 155, 32);
+    [btnDenyTrack addTarget:self action:@selector(handleDenyTrackingTapped) forControlEvents:UIControlEventTouchUpInside];
     
-    tokenInfoLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 84, 150, 45)];
-    tokenInfoLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.75];
+    tokenInfoLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 144, 155, 65)];
+    tokenInfoLabel.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.8];
     tokenInfoLabel.textColor = [UIColor yellowColor];
-    tokenInfoLabel.font = [UIFont systemFontOfSize:10];
+    tokenInfoLabel.font = [UIFont systemFontOfSize:9];
     tokenInfoLabel.textAlignment = NSTextAlignmentCenter;
-    tokenInfoLabel.numberOfLines = 2;
+    tokenInfoLabel.numberOfLines = 3;
     tokenInfoLabel.layer.cornerRadius = 8;
     tokenInfoLabel.clipsToBounds = YES;
     
     [self updateTokenInfoLabel];
     [containerView addSubview:btnRotate];
     [containerView addSubview:btnSame];
+    [containerView addSubview:btnAllowTrack];
+    [containerView addSubview:btnDenyTrack];
     [containerView addSubview:tokenInfoLabel];
     [emptyVC.view addSubview:containerView];
     [self->floatingWindow setHidden:NO];
@@ -429,7 +462,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 - (void)handleRotateRefreshTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وهولندا واللغة" message:@"جاري تزوير الموقع، اللغة، المنطقة، والتبديل للتوكن..." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير الشبكة والهوية" message:@"جاري مسح الكوكيز، الويب، وتوليد هويات جديدة..." preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh(YES);
@@ -437,7 +470,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             [alert dismissViewControllerAnimated:YES completion:^{
                 if (weakSelf) {
                     [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير اللغة والمنطقة وتغيير التوكن بنجاح."];
+                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تطهير الشبكة وتغيير التوكن بنجاح."];
                 }
             }];
         });
@@ -446,7 +479,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 - (void)handleSameRefreshTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وهولندا واللغة" message:@"جاري تزوير الموقع، اللغة، والمنطقة بنفس التوكن..." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير الشبكة (نفس)" message:@"جاري مسح الكوكيز والبيانات المؤقتة للشبكة..." preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh(NO);
@@ -454,7 +487,41 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             [alert dismissViewControllerAnimated:YES completion:^{
                 if (weakSelf) {
                     [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير اللغة والمنطقة واستخدام نفس التوكن بنجاح."];
+                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تطهير الشبكة والذاكرة بنجاح."];
+                }
+            }];
+        });
+    }];
+}
+
+- (void)handleAllowTrackingTapped {
+    UIViewController *rootVC = self->floatingWindow.rootViewController;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"السماح بالتتبع" message:@"جاري تفعيل التتبع وتوليد معرف تتبع جديد..." preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [rootVC presentViewController:alert animated:YES completion:^{
+        setTrackingState(YES);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:^{
+                if (weakSelf) {
+                    [weakSelf updateTokenInfoLabel];
+                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم السماح بالتتبع وتوليد معرف جديد بنجاح."];
+                }
+            }];
+        });
+    }];
+}
+
+- (void)handleDenyTrackingTapped {
+    UIViewController *rootVC = self->floatingWindow.rootViewController;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"إيقاف التتبع" message:@"جاري رفض وإيقاف التتبع وتحديث الهوية..." preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    [rootVC presentViewController:alert animated:YES completion:^{
+        setTrackingState(NO);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:^{
+                if (weakSelf) {
+                    [weakSelf updateTokenInfoLabel];
+                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم إيقاف التتبع وتحديث الهوية بنجاح."];
                 }
             }];
         });
@@ -463,7 +530,6 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 @end
 
-// إطلاق الزر العائم عند الإقلاع
 %ctor {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
@@ -471,7 +537,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 }
 
 // ==========================================
-// 4. هوكات تزوير الآيفونات، هولندا، اللغة، المنطقة، الوقت، ونظام التشغيل
+// هوكات تزوير النظام، الشبكة، والهويات
 // ==========================================
 
 %hook UIDevice
@@ -515,7 +581,6 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 }
 %end
 
-// تزوير لغة الجهاز ومنطقة الجهاز (Locale & Languages)
 %hook NSLocale
 + (NSLocale *)currentLocale {
     return [[NSLocale alloc] initWithLocaleIdentifier:getCurrentDeviceRegion()];
@@ -536,13 +601,13 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
     return [[NSUUID alloc] initWithUUIDString:getCurrentIDFA()];
 }
 - (BOOL)isAdvertisingTrackingEnabled {
-    return NO;
+    return getStoredTrackingState();
 }
 %end
 
 %hook ATTrackingManager
 + (NSUInteger)trackingAuthorizationStatus {
-    return 2;
+    return getStoredTrackingState() ? 3 : 2;
 }
 %end
 
@@ -556,27 +621,13 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 %end
 
 %hook ActivatorAdService
-- (BOOL)isReady {
-    return YES;
-}
-- (BOOL)isAdReady {
-    return YES;
-}
-- (BOOL)canShowAd {
-    return YES;
-}
-- (BOOL)hasAdLoaded {
-    return YES;
-}
-- (void)loadAd {
-    %orig;
-}
-- (void)showRewardAd {
-    %orig;
-}
-- (void)presentAdFromViewController:(UIViewController *)viewController {
-    %orig;
-}
+- (BOOL)isReady { return YES; }
+- (BOOL)isAdReady { return YES; }
+- (BOOL)canShowAd { return YES; }
+- (BOOL)hasAdLoaded { return YES; }
+- (void)loadAd { %orig; }
+- (void)showRewardAd { %orig; }
+- (void)presentAdFromViewController:(UIViewController *)viewController { %orig; }
 - (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
     id targetSelf = self;
     if ([targetSelf respondsToSelector:@selector(loadAd)]) {
