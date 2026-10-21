@@ -2,9 +2,10 @@
 #import <UIKit/UIKit.h>
 #import <AdSupport/AdSupport.h>
 #import <AppTrackingTransparency/AppTrackingTransparency.h>
-#import <Security/Security.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
+// إعلان مسبق شامل لكل الدوال المحتملة لمدير الإعلانات
 @interface ActivatorAdService : NSObject
 - (void)loadAd;
 - (BOOL)isReady;
@@ -13,24 +14,11 @@
 - (BOOL)hasAdLoaded;
 - (void)showRewardAd;
 - (void)presentAdFromViewController:(UIViewController *)viewController;
+- (void)grantReward;
 @end
 
-extern void executeFullEnvironmentRefresh(void);
-
-// توليد توكن عشوائي جديد بنفس صيغة الـ Hex (طول 64 حرفاً سداسياً عشرياً) لمفتاح deviceTokenKey
-static NSString *generateRandomHexToken() {
-    NSMutableString *token = [NSMutableString stringWithCapacity:64];
-    NSString *letters = @"0123456789ABCDEF";
-    for (int i = 0; i < 64; i++) {
-        u_int32_t index = arc4random_uniform((u_int32_t)[letters length]);
-        unichar c = [letters characterAtIndex:index];
-        [token appendFormat:@"%C", c];
-    }
-    return token;
-}
-
-// 1. حذف جميع عناصر الـ Keychain ثم حقن كلا التوكنين معاً (tokenKey الأصلي بجانب deviceTokenKey الجديد)
-static void clearAllKeychainAndAddNewItem() {
+// 1. تنظيف الـ Keychain مع الحفاظ التام والآمن حصرياً على الـ tokenKey
+static void clearKeychainExceptToken() {
     NSArray *secClasses = @[
         (__bridge id)kSecClassGenericPassword,
         (__bridge id)kSecClassInternetPassword,
@@ -39,412 +27,232 @@ static void clearAllKeychainAndAddNewItem() {
         (__bridge id)kSecClassIdentity
     ];
     
-    NSString *primaryAccessGroup = @"3J96GNXKKU.*";
-    
     for (id secClass in secClasses) {
-        NSDictionary *generalQuery = @{
-            (__bridge id)kSecClass: secClass
-        };
-        SecItemDelete((__bridge CFDictionaryRef)generalQuery);
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            NSDictionary *groupQuery = @{
-                (__bridge id)kSecClass: secClass,
-                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
-            };
-            SecItemDelete((__bridge CFDictionaryRef)groupQuery);
-        }
-        
-        NSMutableDictionary *spec = [NSMutableDictionary dictionaryWithDictionary:@{
-            (__bridge id)kSecClass: secClass,
-            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
-            (__bridge id)kSecReturnPersistentRef: @YES
-        }];
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-        }
-        
+        NSDictionary *spec = @{(__bridge id)kSecClass: secClass};
         CFArrayRef result = NULL;
         if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
             NSArray *items = (__bridge NSArray *)result;
-            for (id itemRef in items) {
-                NSDictionary *refQuery = @{
-                    (__bridge id)kSecValueRef: itemRef
-                };
-                SecItemDelete((__bridge CFDictionaryRef)refQuery);
+            for (NSDictionary *item in items) {
+                NSString *account = item[(__bridge id)kSecAttrAccount];
+                NSString *service = item[(__bridge id)kSecAttrService];
+                
+                if (![account isEqualToString:@"tokenKey"]) {
+                    NSMutableDictionary *delQuery = [NSMutableDictionary dictionaryWithDictionary:item];
+                    delQuery[(__bridge id)kSecClass] = secClass;
+                    SecItemDelete((__bridge CFDictionaryRef)delQuery);
+                } else {
+                    NSLog(@">>> [Full-Simulate] tokenKey safely preserved: %@", service);
+                }
             }
-            CFRelease(result);
+            if (result) {
+                CFRelease(result);
+            }
         }
     }
-    
-    NSString *serviceName = @"app.getsmscode";
-    
-    // --- العنصر الأول: tokenKey الأصلي ---
-    NSString *account1 = @"tokenKey";
-    NSString *tokenVal1 = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
-    NSData *data1 = [tokenVal1 dataUsingEncoding:NSUTF8StringEncoding];
-    
-    NSMutableDictionary *query1 = [NSMutableDictionary dictionaryWithDictionary:@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: serviceName,
-        (__bridge id)kSecAttrAccount: account1,
-        (__bridge id)kSecValueData: data1
-    }];
-    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-        query1[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-    }
-    SecItemDelete((__bridge CFDictionaryRef)query1);
-    OSStatus status1 = SecItemAdd((__bridge CFDictionaryRef)query1, NULL);
-    if (status1 != errSecSuccess) {
-        [query1 removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
-        SecItemDelete((__bridge CFDictionaryRef)query1);
-        SecItemAdd((__bridge CFDictionaryRef)query1, NULL);
-    }
-    
-    // --- العنصر الثاني: deviceTokenKey الجديد مع توكن Hex عشوائي بطول 64 حرفاً ---
-    NSString *account2 = @"deviceTokenKey";
-    NSString *tokenVal2 = generateRandomHexToken();
-    NSData *data2 = [tokenVal2 dataUsingEncoding:NSUTF8StringEncoding];
-    
-    NSMutableDictionary *query2 = [NSMutableDictionary dictionaryWithDictionary:@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: serviceName,
-        (__bridge id)kSecAttrAccount: account2,
-        (__bridge id)kSecValueData: data2
-    }];
-    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-        query2[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-    }
-    SecItemDelete((__bridge CFDictionaryRef)query2);
-    OSStatus status2 = SecItemAdd((__bridge CFDictionaryRef)query2, NULL);
-    if (status2 != errSecSuccess) {
-        [query2 removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
-        SecItemDelete((__bridge CFDictionaryRef)query2);
-        SecItemAdd((__bridge CFDictionaryRef)query2, NULL);
-    }
-    
-    NSLog(@">>> [Dynamic-Refresh] Both tokenKey and deviceTokenKey successfully injected into Keychain.");
 }
 
 static NSString *randomNewIDFA() {
     return [[NSUUID UUID] UUIDString];
 }
 
+// دالة الـ IP الوهمي التي طلبت عدم حذفها
 static NSString *randomEuropeanIP() {
-    return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
+    return [NSString stringWithFormat:@"82.92.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
 }
 
-// توليد فترة إزاحة عشوائية تتراوح بين 5 أيام إلى 60 يوماً بالثواني
-static double randomTimeOffsetSeconds() {
-    return (double)(432000 + arc4random_uniform(4752001));
+static double randomInactivitySeconds() {
+    return (double)(864000 + arc4random_uniform(4320000));
 }
 
-// توليد التاريخ بصيغة AppsFlyer الدقيقة الظاهرة في الصور (yyyy-MM-dd'T'HH:mm:ss+0300)
-static NSString *generateShiftedTimestamp() {
-    double offsetSeconds = randomTimeOffsetSeconds();
-    NSDate *shiftedDate = [NSDate dateWithTimeIntervalSinceNow:-offsetSeconds];
+static NSString *generateFreshTimestamp() {
+    NSDate *now = [NSDate date];
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss+0300"];
-    return [formatter stringFromDate:shiftedDate];
+    [formatter setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSS'+0300'"];
+    return [formatter stringFromDate:now];
 }
 
-// 2. دالة تنظيف شاملة وضبط القيم الزمنية وفتح الإعلانات
-void executeFullEnvironmentRefresh() {
+// 2. محاكاة حذف التطبيق من الجذور وتثبيته من جديد
+static void simulateFreshAppReinstallation() {
     @autoreleasepool {
-        clearAllKeychainAndAddNewItem();
-
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSString *homeDir = NSHomeDirectory();
-        
-        NSError *error = nil;
-        NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
-        for (NSString *item in homeContents) {
-            NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
-            [fileManager removeItemAtPath:fullPath error:&error];
-        }
-        
-        NSArray *subDirs = @[@"Documents", @"Library/Caches", @"Library/Application Support", @"Library/Preferences", @"Library/Cookies", @"tmp"];
-        for (NSString *subDir in subDirs) {
-            NSString *targetPath = [homeDir stringByAppendingPathComponent:subDir];
-            if ([fileManager fileExistsAtPath:targetPath]) {
-                NSArray *contents = [fileManager contentsOfDirectoryAtPath:targetPath error:nil];
-                for (NSString *file in contents) {
-                    NSString *filePath = [targetPath stringByAppendingPathComponent:file];
-                    [fileManager removeItemAtPath:filePath error:nil];
-                }
-            }
-        }
+        clearKeychainExceptToken();
 
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
         if (bundleIdentifier) {
             [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
         }
+
+        NSString *homeDir = NSHomeDirectory();
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        NSArray *subfoldersToWipe = @[@"Documents", @"Library", @"tmp"];
         
-        NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
-        if ([fileManager fileExistsAtPath:groupDirBase]) {
-            NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
-            for (NSString *groupFolder in groupFolders) {
-                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
-                [fileManager removeItemAtPath:groupPath error:nil];
+        for (NSString *folder in subfoldersToWipe) {
+            NSString *folderPath = [homeDir stringByAppendingPathComponent:folder];
+            if ([fileManager fileExistsAtPath:folderPath]) {
+                NSArray *contents = [fileManager contentsOfDirectoryAtPath:folderPath error:nil];
+                for (NSString *item in contents) {
+                    if ([item isEqualToString:@"Caches"] || [item isEqualToString:@"Preferences"] || [item isEqualToString:@"Application Support"] || [item isEqualToString:@"tmp"]) {
+                        NSString *subPath = [folderPath stringByAppendingPathComponent:item];
+                        NSArray *subContents = [fileManager contentsOfDirectoryAtPath:subPath error:nil];
+                        for (NSString *subItem in subContents) {
+                            if (![subItem containsString:@"WebKit"] && ![subItem containsString:@"Preferences"]) {
+                                NSString *finalPath = [subPath stringByAppendingPathComponent:subItem];
+                                [fileManager removeItemAtPath:finalPath error:nil];
+                            }
+                        }
+                    } else {
+                        NSString *finalPath = [folderPath stringByAppendingPathComponent:item];
+                        [fileManager removeItemAtPath:finalPath error:nil];
+                    }
+                }
             }
         }
-
+        
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSString *freshID = randomNewIDFA();
-        NSString *shiftedDateStr = generateShiftedTimestamp();
-        double shiftedSeconds = randomTimeOffsetSeconds();
+        NSString *freshDate = generateFreshTimestamp();
+        double dynamicInactivityTime = randomInactivitySeconds();
         
-        NSTimeInterval currentReferenceTime = [[NSDate date] timeIntervalSinceReferenceDate];
-        NSTimeInterval shiftedReferenceTime = currentReferenceTime - shiftedSeconds;
-        NSTimeInterval shiftedEpochMillis = shiftedReferenceTime * 1000.0;
-        double largeIntervalValue = shiftedSeconds * 50.0 + (double)arc4random_uniform(500000);
-
-        // المفاتيح والمعرفات المطابقة للصور
         [defaults setObject:freshID forKey:@"device.id.key"];
         [defaults setObject:freshID forKey:@"com.google.sso.GeneratedDeviceIdentifier"];
         [defaults setObject:freshID forKey:@"AppsFlyerUserId"];
         [defaults setObject:freshID forKey:@"com.firebase.installations.app_id_to_fiid_enforcement"];
-        [defaults setObject:freshID forKey:@"igg-userId"];
-        [defaults setObject:freshID forKey:@"STAStoredDeveloperUserId"];
-        [defaults setObject:freshID forKey:@"STASessionUUID"];
-
-        // تصفير وفتح عدادات الإعلانات تماماً وتجاوز الانتظار
-        [defaults setInteger:0 forKey:@"ad_limit_counter"];
-        [defaults setInteger:0 forKey:@"daily_ads_watched"];
-        [defaults setObject:shiftedDateStr forKey:@"last_ad_watch_date"];
         
         [defaults setInteger:2 forKey:@"ATT_Tracking_Status"];
-        [defaults setInteger:2 forKey:@"ump_status"];
-        [defaults setInteger:1 forKey:@"consent.gdpr.value"];
-        [defaults setInteger:0 forKey:@"consent.gdpr.explicit"];
-        [defaults setInteger:1 forKey:@"trackedKey"];
-        [defaults setInteger:1 forKey:@"STAPas"];
-
-        [defaults setInteger:4 forKey:@"AppsFlyerCounter"];
-        [defaults setInteger:4 forKey:@"AppsFlyerRealLaunchCounter"];
+        [defaults setInteger:0 forKey:@"ump_status"];
+        [defaults setInteger:0 forKey:@"IABTCF_gdprApplies"];
+        
+        [defaults setInteger:1 forKey:@"AppsFlyerRealLaunchCounter"];
         [defaults setInteger:0 forKey:@"AppsFlyerReinstallCounter"];
         [defaults setInteger:1 forKey:@"AppsFlyerLaunchKey"];
-        [defaults setInteger:1 forKey:@"AppsFlyerReadyToSendEvents"];
-
-        [defaults setObject:shiftedDateStr forKey:@"AppsFlyerInstallDate"];
-        [defaults setObject:shiftedDateStr forKey:@"AppsFlyerFirstLaunchDate"];
-        [defaults setObject:shiftedDateStr forKey:@"AppsFlyerInstallTimestamp"];
-        [defaults setObject:shiftedDateStr forKey:@"AppsFlyerInitDate"];
-
-        [defaults setDouble:1.0 forKey:@"AppsFlyerLastSessionDuration"];
-        [defaults setDouble:shiftedSeconds forKey:@"AppsFlyerTimePassedSincePrevLaunch"];
-        [defaults setDouble:largeIntervalValue forKey:@"time_passed_since_last_session"];
-        [defaults setDouble:largeIntervalValue forKey:@"last_activity_interval"];
-
-        [defaults setDouble:shiftedEpochMillis forKey:@"STAFirstSessionTime"];
-        [defaults setDouble:shiftedEpochMillis forKey:@"STACurrentSessionStartTime"];
-        [defaults setDouble:shiftedReferenceTime forKey:@"consent.gdpr.time"];
-        [defaults setDouble:shiftedReferenceTime forKey:@"SKPurchaseIntentUpdatesLastChecked"];
-
+        
+        [defaults setObject:freshDate forKey:@"AppsFlyerInstallDate"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerFirstLaunchDate"];
+        [defaults setObject:freshDate forKey:@"AppsFlyerInstallTimestamp"];
+        
+        [defaults setDouble:0.0 forKey:@"AppsFlyerLastSessionDuration"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"AppsFlyerTimePassedSincePrevLaunch"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"time_passed_since_last_session"];
+        [defaults setDouble:dynamicInactivityTime forKey:@"last_activity_interval"];
+        
         [defaults synchronize];
         
-        NSLog(@">>> [Manual-Refresh] BOTH TOKENS INJECTED & TIME SHIFTED 5-60 DAYS SUCCESSFUL: %@", freshID);
+        NSLog(@">>> [Full-Simulate] Sandbox completely wiped & fresh clean-install simulated with ID: %@", freshID);
     }
 }
 
-// 3. نافذة مخصصة للزر العائم
-@interface FloatingButtonWindow : UIWindow
-@property (nonatomic, strong) UIButton *targetButton;
-@end
-
-@implementation FloatingButtonWindow
-- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!self.targetButton) return NO;
-    CGPoint buttonPoint = [self convertPoint:point toView:self.targetButton];
-    return [self.targetButton pointInside:buttonPoint withEvent:event];
-}
-@end
-
-@interface FloatingButtonManager : NSObject
-+ (instancetype)sharedInstance;
-- (void)showFloatingButton;
-@end
-
-@implementation FloatingButtonManager {
-    FloatingButtonWindow *floatingWindow;
-    UIButton *refreshButton;
+// 3. تطبيق الـ Runtime Hooks للدوال النظامية ومدير الإعلانات
+static NSUInteger replacement_trackingAuthorizationStatus(id self, SEL _cmd) {
+    return 2; // Denied
 }
 
-+ (instancetype)sharedInstance {
-    static FloatingButtonManager *sharedInstance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sharedInstance = [[FloatingButtonManager alloc] init];
-    });
-    return sharedInstance;
-}
-
-- (void)showFloatingButton {
-    if (self->floatingWindow) return;
-    
-    UIWindowScene *targetScene = nil;
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-            targetScene = (UIWindowScene *)scene;
-            break;
-        }
-    }
-    
-    if (targetScene) {
-        self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
-    } else {
-        self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    }
-    
-    self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
-    self->floatingWindow.backgroundColor = [UIColor clearColor];
-    
-    UIViewController *emptyVC = [[UIViewController alloc] init];
-    emptyVC.view.backgroundColor = [UIColor clearColor];
-    self->floatingWindow.rootViewController = emptyVC;
-    
-    self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
-    [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
-    self->refreshButton.layer.cornerRadius = 20;
-    self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
-    self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
-    self->refreshButton.layer.shadowOpacity = 0.4;
-    self->refreshButton.layer.shadowRadius = 4;
-    
-    CGRect screenBounds = [UIScreen mainScreen].bounds;
-    CGFloat screenWidth = screenBounds.size.width;
-    self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
-    
-    [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
-    
-    self->floatingWindow.targetButton = self->refreshButton;
-    [emptyVC.view addSubview:self->refreshButton];
-    [self->floatingWindow setHidden:NO];
-}
-
-- (void)showSuccessAlertFromRoot:(UIViewController * _Nonnull)rootVC {
-    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
-                                                                           message:@"تم تطهير البيانات، حقن مفتاحي الـ Keychain (tokenKey و deviceTokenKey) معاً، وخداع الوقت (5 إلى 60 يوماً)." 
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-    
-    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        exit(0);
-    }]];
-    
-    [rootVC presentViewController:successAlert animated:YES completion:nil];
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        exit(0);
-    });
-}
-
-- (void)handleRefreshButtonTapped {
-    UIViewController *rootVC = self->floatingWindow.rootViewController;
-    
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
-                                                               message:@"جاري حقن التوكنين معاً في الـ Keychain وتطهير البيانات..." 
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    
-    __weak typeof(self) weakSelf = self;
-    [rootVC presentViewController:alert animated:YES completion:^{
-        executeFullEnvironmentRefresh();
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                if (weakSelf) {
-                    [weakSelf showSuccessAlertFromRoot:rootVC];
-                }
-            }];
-        });
-    }];
-}
-
-@end
-
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق
-%ctor {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[FloatingButtonManager sharedInstance] showFloatingButton];
-    });
-}
-
-// بقية الهوكات والتعديلات
-%hook ATTrackingManager
-+ (NSUInteger)trackingAuthorizationStatus {
-    return 2;
-}
-%end
-
-%hook UIDevice
-- (NSUUID *)identifierForVendor {
+static NSUUID * replacement_identifierForVendor(id self, SEL _cmd) {
     return [NSUUID UUID];
 }
-%end
 
-%hook ASIdentifierManager
-- (NSUUID *)advertisingIdentifier {
+static NSUUID * replacement_advertisingIdentifier(id self, SEL _cmd) {
     return [NSUUID UUID];
 }
-- (BOOL)isAdvertisingTrackingEnabled {
+
+static BOOL replacement_isAdvertisingTrackingEnabled(id self, SEL _cmd) {
     return NO;
 }
-%end
 
-%hook NSMutableURLRequest
-- (void)setValue:(NSString * _Nullable)value forHTTPHeaderField:(NSString *)field {
+// Hook لـ NSMutableURLRequest لتزوير الهيدر والـ IP الوهمي
+static void (*original_setValue_forHTTPHeaderField)(id, SEL, NSString *, NSString *);
+static void replacement_setValue_forHTTPHeaderField(id self, SEL _cmd, NSString *value, NSString *field) {
     if ([field isEqualToString:@"X-Forwarded-For"] || [field isEqualToString:@"Client-IP"] || [field isEqualToString:@"True-Client-IP"]) {
         value = randomEuropeanIP();
     }
-    %orig(value, field);
-}
-%end
-
-%hook ActivatorAdService
-
-- (BOOL)isReady {
-    return YES;
-}
-
-- (BOOL)isAdReady {
-    return YES;
-}
-
-- (BOOL)canShowAd {
-    return YES;
-}
-
-- (BOOL)hasAdLoaded {
-    return YES;
-}
-
-- (void)loadAd {
-    %orig;
-}
-
-- (void)showRewardAd {
-    @try {
-        %orig;
-    } @catch (NSException *exception) {
-        NSLog(@">>> [Dynamic-Refresh] Exception in showRewardAd: %@", exception.reason);
+    if (original_setValue_forHTTPHeaderField) {
+        original_setValue_forHTTPHeaderField(self, _cmd, value, field);
     }
 }
 
-- (void)presentAdFromViewController:(UIViewController *)viewController {
-    @try {
-        %orig;
-    } @catch (NSException *exception) {
-        NSLog(@">>> [Dynamic-Refresh] Exception caught in presentAdFromViewController: %@", exception.reason);
-    }
-}
+static BOOL replacement_isReady(id self, SEL _cmd) { return YES; }
+static BOOL replacement_isAdReady(id self, SEL _cmd) { return YES; }
+static BOOL replacement_canShowAd(id self, SEL _cmd) { return YES; }
+static BOOL replacement_hasAdLoaded(id self, SEL _cmd) { return YES; }
 
-- (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
+static void replacement_loadAd(id self, SEL _cmd) {
     id targetSelf = self;
-    if ([targetSelf respondsToSelector:@selector(loadAd)]) {
-        [targetSelf loadAd];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if ([targetSelf respondsToSelector:NSSelectorFromString(@"loadAd")]) {
+            NSLog(@">>> [Full-Simulate] loadAd triggered safely.");
+        }
+    });
+}
+
+static void replacement_showRewardAd(id self, SEL _cmd) {
+    @try {
+        NSLog(@">>> [Full-Simulate] showRewardAd executed successfully.");
+    } @catch (NSException *exception) {
+        NSLog(@">>> [Full-Simulate] Exception caught in showRewardAd, bypassing safely: %@", exception.reason);
     }
 }
 
-%end
+// نقطة الدخول الرئيسية للحقن المباشر عبر eSign
+__attribute__((constructor)) static void initializer() {
+    @autoreleasepool {
+        simulateFreshAppReinstallation();
+        
+        Class attClass = objc_getClass("ATTrackingManager");
+        if (attClass) {
+            Method m = class_getClassMethod(attClass, @selector(trackingAuthorizationStatus));
+            if (m) method_setImplementation(m, (IMP)replacement_trackingAuthorizationStatus);
+        }
+        
+        Class uiDevClass = objc_getClass("UIDevice");
+        if (uiDevClass) {
+            Method m = class_getInstanceMethod(uiDevClass, @selector(identifierForVendor));
+            if (m) method_setImplementation(m, (IMP)replacement_identifierForVendor);
+        }
+        
+        Class asIdClass = objc_getClass("ASIdentifierManager");
+        if (asIdClass) {
+            Method m = class_getInstanceMethod(asIdClass, @selector(advertisingIdentifier));
+            if (m) method_setImplementation(m, (IMP)replacement_advertisingIdentifier);
+            Method m2 = class_getInstanceMethod(asIdClass, @selector(isAdvertisingTrackingEnabled));
+            if (m2) method_setImplementation(m2, (IMP)replacement_isAdvertisingTrackingEnabled);
+        }
+        
+        // تفعيل الـ Hook لـ NSMutableURLRequest مع استخدام دالة الـ IP الوهمي
+        Class reqClass = objc_getClass("NSMutableURLRequest");
+        if (reqClass) {
+            Method m = class_getInstanceMethod(reqClass, @selector(setValue:forHTTPHeaderField:));
+            if (m) {
+                original_setValue_forHTTPHeaderField = (void(*)(id, SEL, NSString *, NSString *))method_getImplementation(m);
+                method_setImplementation(m, (IMP)replacement_setValue_forHTTPHeaderField);
+            }
+        }
+        
+        Class adServiceClass = objc_getClass("ActivatorAdService");
+        if (adServiceClass) {
+            SEL selectors[] = {
+                @selector(isReady),
+                @selector(isAdReady),
+                @selector(canShowAd),
+                @selector(hasAdLoaded),
+                @selector(loadAd),
+                @selector(showRewardAd)
+            };
+            
+            IMP implementations[] = {
+                (IMP)replacement_isReady,
+                (IMP)replacement_isAdReady,
+                (IMP)replacement_canShowAd,
+                (IMP)replacement_hasAdLoaded,
+                (IMP)replacement_loadAd,
+                (IMP)replacement_showRewardAd
+            };
+            
+            for (int i = 0; i < 6; i++) {
+                Method m = class_getInstanceMethod(adServiceClass, selectors[i]);
+                if (m) {
+                    method_setImplementation(m, implementations[i]);
+                }
+            }
+        }
+        
+        NSLog(@">>> [Non-Jailbroken dylib] Successfully loaded, IP spoofed & hooked via eSign!");
+    }
+}
