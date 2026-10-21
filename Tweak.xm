@@ -148,6 +148,37 @@ static NSString *getCurrentNetherlandsCoordinates() {
     });
 }
 
+// توليد منطقة زمنية أوروبية عشوائية
+static NSString *getCurrentTimeZoneName() {
+    return getStoredOrFreshValue(@"spoof_tz.txt", ^NSString * {
+        NSArray *timeZones = @[
+            @"Europe/Amsterdam",
+            @"Europe/Rotterdam",
+            @"Europe/Paris",
+            @"Europe/Berlin",
+            @"Europe/Brussels",
+            @"Europe/Rome"
+        ];
+        return timeZones[arc4random_uniform((uint32_t)timeZones.count)];
+    });
+}
+
+// توليد لغة عشوائية للجهاز (الهولندية أو الإنجليزية الأوروبية)
+static NSString *getCurrentDeviceLanguage() {
+    return getStoredOrFreshValue(@"spoof_lang.txt", ^NSString * {
+        NSArray *languages = @[@"nl", @"en-NL", @"en-GB", @"fr"];
+        return languages[arc4random_uniform((uint32_t)languages.count)];
+    });
+}
+
+// توليد منطقة جغرافية عشوائية للجهاز (هولندا أو دول أوروبية مجاورة)
+static NSString *getCurrentDeviceRegion() {
+    return getStoredOrFreshValue(@"spoof_region.txt", ^NSString * {
+        NSArray *regions = @[@"NL", @"BE", @"FR", @"DE"];
+        return regions[arc4random_uniform((uint32_t)regions.count)];
+    });
+}
+
 // تجديد كافة البصمات والمعلومات عند التطهير
 static void regenerateAllSpoofedData() {
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -156,12 +187,18 @@ static void regenerateAllSpoofedData() {
     [fm removeItemAtPath:getDocumentsFilePath(@"spoof_model.txt") error:nil];
     [fm removeItemAtPath:getDocumentsFilePath(@"spoof_ios.txt") error:nil];
     [fm removeItemAtPath:getDocumentsFilePath(@"spoof_gps.txt") error:nil];
+    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_tz.txt") error:nil];
+    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_lang.txt") error:nil];
+    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_region.txt") error:nil];
     
     getCurrentIDFA();
     getCurrentVendorID();
     getCurrentDeviceModel();
     getCurrentSystemVersion();
     getCurrentNetherlandsCoordinates();
+    getCurrentTimeZoneName();
+    getCurrentDeviceLanguage();
+    getCurrentDeviceRegion();
 }
 
 // 1. حذف جميع عناصر الـ Keychain بالكامل وإدراج التوكن
@@ -229,7 +266,7 @@ static NSString *randomEuropeanIP() {
     return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
 }
 
-// 2. دالة تنظيف شاملة مع تزوير وتغيير كافة البيانات وموقع هولندا
+// 2. دالة تنظيف شاملة مع تزوير وتغيير كافة البيانات وموقع هولندا واللغة والمنطقة
 void executeFullEnvironmentRefresh(BOOL rotateToken) {
     @autoreleasepool {
         NSInteger savedIndex = getCurrentTokenIndex();
@@ -281,7 +318,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
         [defaults setInteger:2 forKey:@"ATT_Tracking_Status"];
         [defaults synchronize];
         
-        NSLog(@">>> [Refresh] Environment wiped, Netherlands location & iOS spoofed.");
+        NSLog(@">>> [Refresh] Environment wiped, Netherlands location, Language, Region & iOS spoofed.");
     }
 }
 
@@ -392,7 +429,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 - (void)handleRotateRefreshTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وموقع هولندا" message:@"جاري تزوير موقع هولندا، أحدث إصدارات iOS، والتبديل للتوكن..." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وهولندا واللغة" message:@"جاري تزوير الموقع، اللغة، المنطقة، والتبديل للتوكن..." preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh(YES);
@@ -400,7 +437,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             [alert dismissViewControllerAnimated:YES completion:^{
                 if (weakSelf) {
                     [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير موقع هولندا ونظام التشغيل وتغيير التوكن بنجاح."];
+                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير اللغة والمنطقة وتغيير التوكن بنجاح."];
                 }
             }];
         });
@@ -409,7 +446,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 - (void)handleSameRefreshTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وموقع هولندا" message:@"جاري تزوير موقع هولندا ونظام التشغيل بنفس التوكن..." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وهولندا واللغة" message:@"جاري تزوير الموقع، اللغة، والمنطقة بنفس التوكن..." preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh(NO);
@@ -417,7 +454,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             [alert dismissViewControllerAnimated:YES completion:^{
                 if (weakSelf) {
                     [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير موقع هولندا ونظام التشغيل واستخدام نفس التوكن بنجاح."];
+                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير اللغة والمنطقة واستخدام نفس التوكن بنجاح."];
                 }
             }];
         });
@@ -434,7 +471,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 }
 
 // ==========================================
-// 4. هوكات تزوير الآيفونات، هولندا، ونظام التشغيل
+// 4. هوكات تزوير الآيفونات، هولندا، اللغة، المنطقة، الوقت، ونظام التشغيل
 // ==========================================
 
 %hook UIDevice
@@ -464,6 +501,33 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
         return [[CLLocation alloc] initWithLatitude:lat longitude:lon];
     }
     return %orig;
+}
+%end
+
+%hook NSTimeZone
++ (NSTimeZone *)localTimeZone {
+    NSTimeZone *tz = [NSTimeZone timeZoneWithName:getCurrentTimeZoneName()];
+    return tz ? tz : %orig;
+}
++ (NSTimeZone *)systemTimeZone {
+    NSTimeZone *tz = [NSTimeZone timeZoneWithName:getCurrentTimeZoneName()];
+    return tz ? tz : %orig;
+}
+%end
+
+// تزوير لغة الجهاز ومنطقة الجهاز (Locale & Languages)
+%hook NSLocale
++ (NSLocale *)currentLocale {
+    return [[NSLocale alloc] initWithLocaleIdentifier:getCurrentDeviceRegion()];
+}
+- (NSString *)localeIdentifier {
+    return getCurrentDeviceRegion();
+}
+%end
+
+%hook NSBundle
++ (NSArray *)preferredLanguages {
+    return @[getCurrentDeviceLanguage()];
 }
 %end
 
