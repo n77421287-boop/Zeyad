@@ -621,9 +621,15 @@ void setTrackingState(BOOL allowTracking) {
 - (BOOL)isAdReady { return YES; }
 - (BOOL)canShowAd { return YES; }
 - (BOOL)hasAdLoaded { return YES; }
-- (void)loadAd { %orig; }
-- (void)showRewardAd { %orig; }
-- (void)presentAdFromViewController:(UIViewController *)viewController { %orig; }
+- (void)loadAd { 
+    %orig; 
+}
+- (void)showRewardAd { 
+    %orig; 
+}
+- (void)presentAdFromViewController:(UIViewController *)viewController { 
+    %orig; 
+}
 - (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
     id targetSelf = self;
     if ([targetSelf respondsToSelector:@selector(loadAd)]) {
