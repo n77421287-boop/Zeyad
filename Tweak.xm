@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <AdSupport/AdSupport.h>
 #import <AppTrackingTransparency/AppTrackingTransparency.h>
+#import <CoreLocation/CoreLocation.h>
 #import <Security/Security.h>
 #import <objc/runtime.h>
 
@@ -85,28 +86,84 @@ static NSString *getCurrentTokenValue() {
     return (index >= 0 && index < tokens.count) ? tokens[index] : tokens[0];
 }
 
-// إدارة وتخزين المعرفات الوهمية (IDFA / IDFV) لضمان ثباتها بالجلسة وتجديدها عند التطهير
-static NSString *getStoredOrFreshUUID(NSString *fileName) {
+// إدارة وتخزين المعرفات والبيانات الوهمية
+static NSString *getStoredOrFreshValue(NSString *fileName, NSString * (^generator)(void)) {
     NSString *path = getDocumentsFilePath(fileName);
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([fm fileExistsAtPath:path]) {
-        NSString *uuid = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-        if (uuid && uuid.length > 0) return uuid;
+        NSString *val = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+        if (val && val.length > 0) return val;
     }
-    NSString *newUuid = [[NSUUID UUID] UUIDString];
-    [newUuid writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    return newUuid;
+    NSString *newVal = generator();
+    [newVal writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    return newVal;
 }
 
-static NSString *getCurrentIDFA() { return getStoredOrFreshUUID(@"spoof_idfa.txt"); }
-static NSString *getCurrentVendorID() { return getStoredOrFreshUUID(@"spoof_vendor.txt"); }
+static NSString *getCurrentIDFA() {
+    return getStoredOrFreshValue(@"spoof_idfa.txt", ^NSString * {
+        return [[NSUUID UUID] UUIDString];
+    });
+}
 
-static void regenerateSpoofedIdentifiers() {
+static NSString *getCurrentVendorID() {
+    return getStoredOrFreshValue(@"spoof_vendor.txt", ^NSString * {
+        return [[NSUUID UUID] UUIDString];
+    });
+}
+
+// توليد موديل جهاز عشوائي لأحدث إصدارات آخر سنتين (2025 - 2026)
+static NSString *getCurrentDeviceModel() {
+    return getStoredOrFreshValue(@"spoof_model.txt", ^NSString * {
+        NSArray *models = @[
+            @"iPhone17,1", // iPhone 17 Pro
+            @"iPhone17,2", // iPhone 17 Pro Max
+            @"iPhone17,3", // iPhone 17
+            @"iPhone17,4", // iPhone Air
+            @"iPhone17,5", // iPhone 17e
+            @"iPhone19,2", // iPhone 18 Pro
+            @"iPhone19,3", // iPhone 18 Pro Max
+            @"iPhone19,4"  // iPhone Duo (Foldable)
+        ];
+        return models[arc4random_uniform((uint32_t)models.count)];
+    });
+}
+
+// توليد إصدار نظام تشغيل عشوائي لإصدارات iOS 17 و iOS 18 فقط (آخر سنتين)
+static NSString *getCurrentSystemVersion() {
+    return getStoredOrFreshValue(@"spoof_ios.txt", ^NSString * {
+        NSArray *versions = @[
+            // إصدارات iOS 17
+            @"17.0", @"17.1", @"17.2", @"17.3", @"17.4", @"17.5", @"17.6", @"17.7",
+            // إصدارات iOS 18
+            @"18.0", @"18.1", @"18.2", @"18.3", @"18.4", @"18.5", @"18.6"
+        ];
+        return versions[arc4random_uniform((uint32_t)versions.count)];
+    });
+}
+
+// توليد إحداثيات GPS عشوائية داخل هولندا
+static NSString *getCurrentNetherlandsCoordinates() {
+    return getStoredOrFreshValue(@"spoof_gps.txt", ^NSString * {
+        double lat = 51.5 + ((double)(arc4random_uniform(170)) / 100.0); // 51.50 - 53.20
+        double lon = 4.3 + ((double)(arc4random_uniform(250)) / 100.0);  // 4.30 - 6.80
+        return [NSString stringWithFormat:@"%f,%f", lat, lon];
+    });
+}
+
+// تجديد كافة البصمات والمعلومات عند التطهير
+static void regenerateAllSpoofedData() {
     NSFileManager *fm = [NSFileManager defaultManager];
     [fm removeItemAtPath:getDocumentsFilePath(@"spoof_idfa.txt") error:nil];
     [fm removeItemAtPath:getDocumentsFilePath(@"spoof_vendor.txt") error:nil];
+    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_model.txt") error:nil];
+    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_ios.txt") error:nil];
+    [fm removeItemAtPath:getDocumentsFilePath(@"spoof_gps.txt") error:nil];
+    
     getCurrentIDFA();
     getCurrentVendorID();
+    getCurrentDeviceModel();
+    getCurrentSystemVersion();
+    getCurrentNetherlandsCoordinates();
 }
 
 // 1. حذف جميع عناصر الـ Keychain بالكامل وإدراج التوكن
@@ -174,7 +231,7 @@ static NSString *randomEuropeanIP() {
     return [NSString stringWithFormat:@"83.82.%d.%d", arc4random_uniform(250) + 1, arc4random_uniform(250) + 1];
 }
 
-// 2. دالة تنظيف شاملة مع استثناء ملفات التوكن والمعرفات المذكورة
+// 2. دالة تنظيف شاملة مع تزوير وتغيير كافة البيانات وموقع هولندا
 void executeFullEnvironmentRefresh(BOOL rotateToken) {
     @autoreleasepool {
         NSInteger savedIndex = getCurrentTokenIndex();
@@ -189,7 +246,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             NSArray *contents = [fileManager contentsOfDirectoryAtPath:documentsDir error:nil];
             for (NSString *file in contents) {
                 if ([file isEqualToString:@"token_index.txt"] || [file hasPrefix:@"spoof_"]) {
-                    continue; // استثناء التوكن والمعرفات المزورّة
+                    continue;
                 }
                 [fileManager removeItemAtPath:[documentsDir stringByAppendingPathComponent:file] error:nil];
             }
@@ -215,8 +272,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             saveCurrentTokenIndex(savedIndex);
         }
 
-        // توليد معرفات جديدة بالكامل مع كل عملية تطهير
-        regenerateSpoofedIdentifiers();
+        regenerateAllSpoofedData();
 
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
         NSString *freshIDFA = getCurrentIDFA();
@@ -227,11 +283,11 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
         [defaults setInteger:2 forKey:@"ATT_Tracking_Status"];
         [defaults synchronize];
         
-        NSLog(@">>> [Refresh] Environment wiped & IDs spoofed successfully.");
+        NSLog(@">>> [Refresh] Environment wiped, Netherlands location & iOS 17-18 spoofed.");
     }
 }
 
-// 3. نافذة الزر العائم
+// 3. نافذة الزر العائم (أعلى يمين الشاشة)
 @interface FloatingButtonWindow : UIWindow
 @property (nonatomic, strong) UIView *contentContainerView;
 @end
@@ -289,7 +345,8 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
     emptyVC.view.backgroundColor = [UIColor clearColor];
     self->floatingWindow.rootViewController = emptyVC;
     
-    UIView *containerView = [[UIView alloc] initWithFrame:CGRectMake([UIScreen mainScreen].bounds.size.width - 160, 50, 150, 135)];
+    CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+    UIView *containerView = [[UIView alloc] initWithFrame:CGRectMake(screenWidth - 160, 50, 150, 135)];
     containerView.backgroundColor = [UIColor clearColor];
     self->floatingWindow.contentContainerView = containerView;
     
@@ -337,7 +394,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 - (void)handleRotateRefreshTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وتزوير المعرفات" message:@"جاري تزوير IDFA و IDFV والتبديل للتوكن التالي..." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وموقع هولندا" message:@"جاري تزوير موقع هولندا، إصدارات iOS 17-18، والتبديل للتوكن..." preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh(YES);
@@ -345,7 +402,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             [alert dismissViewControllerAnimated:YES completion:^{
                 if (weakSelf) {
                     [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير المعرفات وتغيير التوكن بنجاح."];
+                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير موقع هولندا وإصدارات iOS 17-18 وتغيير التوكن بنجاح."];
                 }
             }];
         });
@@ -354,7 +411,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 - (void)handleSameRefreshTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وتزوير المعرفات" message:@"جاري تزوير IDFA و IDFV بنفس التوكن الحالي..." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وموقع هولندا" message:@"جاري تزوير موقع هولندا وإصدارات iOS 17-18 بنفس التوكن..." preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh(NO);
@@ -362,7 +419,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             [alert dismissViewControllerAnimated:YES completion:^{
                 if (weakSelf) {
                     [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير المعرفات واستخدام نفس التوكن بنجاح."];
+                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير موقع هولندا وإصدارات iOS 17-18 واستخدام نفس التوكن بنجاح."];
                 }
             }];
         });
@@ -379,12 +436,38 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 }
 
 // ==========================================
-// 4. هوكات تزوير الـ IDFV و الـ IDFA بشكل مضمون
+// 4. هوكات تزوير الآيفونات الحديثة، موقع هولندا، ونظام التشغيل (iOS 17 & 18)
 // ==========================================
 
 %hook UIDevice
 - (NSUUID *)identifierForVendor {
     return [[NSUUID alloc] initWithUUIDString:getCurrentVendorID()];
+}
+- (NSString *)systemVersion {
+    return getCurrentSystemVersion(); // إصدار iOS عشوائي بين 17 و 18
+}
+- (NSString *)model {
+    return @"iPhone";
+}
+%end
+
+// إرجاع موديل الجهاز الحديث عند الاستعلام الهاردواري
+%hook NSObject
+- (NSString *)machine {
+    return getCurrentDeviceModel();
+}
+%end
+
+// تزوير موقع الـ GPS ليعطي إحداثيات عشوائية داخل هولندا
+%hook CLLocationManager
+- (CLLocation *)location {
+    NSArray *parts = [getCurrentNetherlandsCoordinates() componentsSeparatedByString:@","];
+    if (parts.count == 2) {
+        double lat = [parts[0] doubleValue];
+        double lon = [parts[1] doubleValue];
+        return [[CLLocation alloc] initWithLatitude:lat longitude:lon];
+    }
+    return %orig;
 }
 %end
 
@@ -399,7 +482,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 %hook ATTrackingManager
 + (NSUInteger)trackingAuthorizationStatus {
-    return 2; // Denied / Restricted
+    return 2;
 }
 %end
 
@@ -421,7 +504,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 - (void)showRewardAd {
     @try { %orig; } @catch (NSException *e) {}
 }
-- (void)presentAdFromViewController:(UIViewController *)vc {
+- (void)presentAdFromViewController:(UIViewController * _Nonnull)vc {
     @try { %orig; } @catch (NSException *e) {}
 }
 %end
