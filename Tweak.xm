@@ -128,13 +128,11 @@ static NSString *getCurrentDeviceModel() {
     });
 }
 
-// توليد إصدار نظام تشغيل عشوائي لإصدارات iOS 17 و iOS 18 فقط (آخر سنتين)
+// توليد إصدار نظام تشغيل عشوائي لإصدارات iOS 17 و iOS 18 فقط
 static NSString *getCurrentSystemVersion() {
     return getStoredOrFreshValue(@"spoof_ios.txt", ^NSString * {
         NSArray *versions = @[
-            // إصدارات iOS 17
             @"17.0", @"17.1", @"17.2", @"17.3", @"17.4", @"17.5", @"17.6", @"17.7",
-            // إصدارات iOS 18
             @"18.0", @"18.1", @"18.2", @"18.3", @"18.4", @"18.5", @"18.6"
         ];
         return versions[arc4random_uniform((uint32_t)versions.count)];
@@ -283,7 +281,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
         [defaults setInteger:2 forKey:@"ATT_Tracking_Status"];
         [defaults synchronize];
         
-        NSLog(@">>> [Refresh] Environment wiped, Netherlands location & iOS 17-18 spoofed.");
+        NSLog(@">>> [Refresh] Environment wiped, Netherlands location & iOS spoofed.");
     }
 }
 
@@ -387,14 +385,14 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 - (void)showSuccessAlertFromRoot:(UIViewController * _Nonnull)rootVC message:(NSString * _Nonnull)msg {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) { exit(0); }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action { exit(0); }]];
     [rootVC presentViewController:alert animated:YES completion:nil];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ exit(0); });
 }
 
 - (void)handleRotateRefreshTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وموقع هولندا" message:@"جاري تزوير موقع هولندا، إصدارات iOS 17-18، والتبديل للتوكن..." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وموقع هولندا" message:@"جاري تزوير موقع هولندا، أحدث إصدارات iOS، والتبديل للتوكن..." preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh(YES);
@@ -402,7 +400,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             [alert dismissViewControllerAnimated:YES completion:^{
                 if (weakSelf) {
                     [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير موقع هولندا وإصدارات iOS 17-18 وتغيير التوكن بنجاح."];
+                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير موقع هولندا ونظام التشغيل وتغيير التوكن بنجاح."];
                 }
             }];
         });
@@ -411,7 +409,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 
 - (void)handleSameRefreshTapped {
     UIViewController *rootVC = self->floatingWindow.rootViewController;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وموقع هولندا" message:@"جاري تزوير موقع هولندا وإصدارات iOS 17-18 بنفس التوكن..." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تطهير وموقع هولندا" message:@"جاري تزوير موقع هولندا ونظام التشغيل بنفس التوكن..." preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     [rootVC presentViewController:alert animated:YES completion:^{
         executeFullEnvironmentRefresh(NO);
@@ -419,7 +417,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
             [alert dismissViewControllerAnimated:YES completion:^{
                 if (weakSelf) {
                     [weakSelf updateTokenInfoLabel];
-                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير موقع هولندا وإصدارات iOS 17-18 واستخدام نفس التوكن بنجاح."];
+                    [weakSelf showSuccessAlertFromRoot:rootVC message:@"تم تزوير موقع هولندا ونظام التشغيل واستخدام نفس التوكن بنجاح."];
                 }
             }];
         });
@@ -436,7 +434,7 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 }
 
 // ==========================================
-// 4. هوكات تزوير الآيفونات الحديثة، موقع هولندا، ونظام التشغيل (iOS 17 & 18)
+// 4. هوكات تزوير الآيفونات، هولندا، ونظام التشغيل
 // ==========================================
 
 %hook UIDevice
@@ -444,21 +442,19 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
     return [[NSUUID alloc] initWithUUIDString:getCurrentVendorID()];
 }
 - (NSString *)systemVersion {
-    return getCurrentSystemVersion(); // إصدار iOS عشوائي بين 17 و 18
+    return getCurrentSystemVersion();
 }
 - (NSString *)model {
     return @"iPhone";
 }
 %end
 
-// إرجاع موديل الجهاز الحديث عند الاستعلام الهاردواري
 %hook NSObject
 - (NSString *)machine {
     return getCurrentDeviceModel();
 }
 %end
 
-// تزوير موقع الـ GPS ليعطي إحداثيات عشوائية داخل هولندا
 %hook CLLocationManager
 - (CLLocation *)location {
     NSArray *parts = [getCurrentNetherlandsCoordinates() componentsSeparatedByString:@","];
@@ -496,15 +492,31 @@ void executeFullEnvironmentRefresh(BOOL rotateToken) {
 %end
 
 %hook ActivatorAdService
-- (BOOL)isReady { return YES; }
-- (BOOL)isAdReady { return YES; }
-- (BOOL)canShowAd { return YES; }
-- (BOOL)hasAdLoaded { return YES; }
-- (void)loadAd { %orig; }
-- (void)showRewardAd {
-    @try { %orig; } @catch (NSException *e) {}
+- (BOOL)isReady {
+    return YES;
 }
-- (void)presentAdFromViewController:(UIViewController * _Nonnull)vc {
-    @try { %orig; } @catch (NSException *e) {}
+- (BOOL)isAdReady {
+    return YES;
+}
+- (BOOL)canShowAd {
+    return YES;
+}
+- (BOOL)hasAdLoaded {
+    return YES;
+}
+- (void)loadAd {
+    %orig;
+}
+- (void)showRewardAd {
+    %orig;
+}
+- (void)presentAdFromViewController:(UIViewController *)viewController {
+    %orig;
+}
+- (void)ad:(id)arg1 didFailToPresentFullScreenContentWithError:(id)arg2 {
+    id targetSelf = self;
+    if ([targetSelf respondsToSelector:@selector(loadAd)]) {
+        [targetSelf loadAd];
+    }
 }
 %end
