@@ -75,13 +75,10 @@ int hooked_gettimeofday(struct timeval *restrict tp, void *restrict tzp) {
     return result;
 }
 
-// ==========================================
-// 2. CORE FOUNDATION & CORE ANIMATION APIs
-// ==========================================
-
-%hook CACurrentMediaTime
-double currentTime() {
-    double original = %orig;
+// اعتراض CACurrentMediaTime كدالة C عبر fishhook لتجنب أخطاء Preprocessor
+static double (*orig_CACurrentMediaTime)(void);
+double hooked_CACurrentMediaTime(void) {
+    double original = orig_CACurrentMediaTime ? orig_CACurrentMediaTime() : 0;
     static double baseReal = 0;
     static double baseScaled = 0;
     static dispatch_once_t onceToken;
@@ -91,7 +88,10 @@ double currentTime() {
     });
     return baseScaled + (original - baseReal) * g_speedMultiplier;
 }
-%end
+
+// ==========================================
+// 2. FOUNDATION APIs (NSDate)
+// ==========================================
 
 %hook NSDate
 + (instancetype)date {
@@ -100,8 +100,7 @@ double currentTime() {
     return [NSDate dateWithTimeIntervalSinceReferenceDate:ti * g_speedMultiplier];
 }
 - (NSTimeInterval)timeIntervalSinceReferenceDate {
-    NSTimeInterval origVal = %orig;
-    return origVal * g_speedMultiplier;
+    return %orig * g_speedMultiplier;
 }
 %end
 
@@ -148,12 +147,13 @@ double currentTime() {
 }
 %end
 
-// ربط الدوال وتفعيل التويك فور الإطلاق
+// ربط جميع الدوال C وتفعيل التويك فور الإطلاق
 %ctor {
     struct rebinding rebindings[] = {
         {"mach_absolute_time", (void *)hooked_mach_absolute_time, (void **)&orig_mach_absolute_time},
         {"clock_gettime", (void *)hooked_clock_gettime, (void **)&orig_clock_gettime},
-        {"gettimeofday", (void *)hooked_gettimeofday, (void **)&orig_gettimeofday}
+        {"gettimeofday", (void *)hooked_gettimeofday, (void **)&orig_gettimeofday},
+        {"CACurrentMediaTime", (void *)hooked_CACurrentMediaTime, (void **)&orig_CACurrentMediaTime}
     };
-    rebind_symbols(rebindings, 3);
+    rebind_symbols(rebindings, 4);
 }
