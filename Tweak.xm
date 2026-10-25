@@ -2,7 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 
-// دالة لتشغيل التكرار كل نصف ثانية لكل زر على حدة
+// دالة لتشغيل التكرار كل ثانية لكل زر على حدة
 static void startAutoClickingForTarget(id target) {
     static NSMapTable *activeTimers = nil;
     static dispatch_once_t onceToken;
@@ -12,8 +12,8 @@ static void startAutoClickingForTarget(id target) {
 
     if (target && ![activeTimers objectForKey:target]) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            // التكرار كل نصف ثانية (0.5)
-            NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer * _Nonnull t) {
+            // التكرار كل ثانية واحدة (1.0)
+            NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer * _Nonnull t) {
                 if (target && [target respondsToSelector:@selector(onEvent)]) {
                     ((void (*)(id, SEL))objc_msgSend)(target, @selector(onEvent));
                 } else {
