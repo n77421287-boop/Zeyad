@@ -96,16 +96,13 @@ static void clearAllKeychainAndAddNewItem() {
 
 // 2. تصفير وإعادة تعيين حالة صلاحية التتبع (ATT Status) لإجبار التطبيق على طلبها من جديد
 static void resetTrackingAuthorizationStatus() {
-    // الطريقة الأولى: حذف ملفات اعدادات الخصوصية المؤقتة الخاصة بالتطبيق في الـ Library
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSString *homeDir = NSHomeDirectory();
     NSString *libraryDir = [homeDir stringByAppendingPathComponent:@"Library"];
     
-    // البحث عن ملفات الـ Caches أو Cookies أو Preferences المرتبطة بالخصوصية وحذفها
     NSArray *libraryContents = [fileManager contentsOfDirectoryAtPath:libraryDir error:nil];
     for (NSString *item in libraryContents) {
         if ([item containsString:@"Caches"] || [item containsString:@"Preferences"] || [item containsString:@"WebKit"]) {
-            // يمكننا تفريغ محتويات الـ Caches لإزالة أي كاش مخزن لحالة الأذونات
             NSString *fullPath = [libraryDir stringByAppendingPathComponent:item];
             if ([item containsString:@"Caches"]) {
                 NSArray *cachesFiles = [fileManager contentsOfDirectoryAtPath:fullPath error:nil];
@@ -120,7 +117,6 @@ static void resetTrackingAuthorizationStatus() {
 // 3. دالة تنظيف شاملة وجذرية لحذف كافة الملفات والمجلدات وتجديد المعرفات وحالة الأذونات
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
-        // توليد قيم جديدة كلياً للـ IDFA و الـ IDFV عند كل عملية تطهير
         currentRandomIDFA = [[NSUUID UUID] UUIDString];
         currentRandomIDFV = [[NSUUID UUID] UUIDString];
         
@@ -133,7 +129,6 @@ void executeFullEnvironmentRefresh() {
         NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
         
-        // حذف كافة الملفات والمجلدات الموجودة في المجلد الرئيسي بلا استثناء
         for (NSString *item in homeContents) {
             NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
             [fileManager removeItemAtPath:fullPath error:&error];
@@ -142,7 +137,6 @@ void executeFullEnvironmentRefresh() {
             }
         }
         
-        // مسح محتويات مجلدات الحاويات الجماعية (Group Containers) بالكامل
         NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
         if ([fileManager fileExistsAtPath:groupDirBase]) {
             NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
@@ -155,7 +149,6 @@ void executeFullEnvironmentRefresh() {
             }
         }
 
-        // حذف ملفات الـ NSUserDefaults بالكامل والدومين الخاص به يدوياً من القرص
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
         if (bundleIdentifier) {
             [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
@@ -203,7 +196,7 @@ void executeFullEnvironmentRefresh() {
     static FloatingButtonManager *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sharedInstance = [[FloatingButtonManager instancesRespondToSelector:@selector(init)] ? [[FloatingButtonManager alloc] init] : nil; // Safe init
+        sharedInstance = [[FloatingButtonManager alloc] init];
     });
     return sharedInstance;
 }
@@ -295,7 +288,6 @@ void executeFullEnvironmentRefresh() {
 // 5. هوكات إضافية لإجبار نظام أذونات التتبع (ATT) على العودة للحالة الابتدائية (NotDetermined)
 %hook ATTrackingManager
 + (NSUInteger)trackingAuthorizationStatus {
-    // إرجاع الحالة إلى "لم يتم تحديدها بعد" ليقوم التطبيق بعرض نافذة طلب الإذن من جديد
     return 0; // 0 = ATTrackingManagerAuthorizationStatusNotDetermined
 }
 %end
