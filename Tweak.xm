@@ -1,154 +1,300 @@
+#import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <mach/mach_time.h>
-#import <time.h>
-#import <sys/time.h>
-#import <dlfcn.h>
-#import <substrate.h>
-#import <QuartzCore/QuartzCore.h>
+#import <AdSupport/AdSupport.h>
+#import <AppTrackingTransparency/AppTrackingTransparency.h>
+#import <Security/Security.h>
+#import <objc/runtime.h>
 
-// تثبيت معامل السرعة على 90,000 ضعف تلقائياً ودائماً
-static const double g_speedMultiplier = 90000.0;
+extern void executeFullEnvironmentRefresh(void);
 
-// --- Anchor State for Monotonic Scaling ---
-static uint64_t s_machBaseAnchor = 0;
-static uint64_t s_machScaledAnchor = 0;
+// متغيرات عامة لحفظ الـ IDFA و الـ IDFV المتجددة
+static NSString *currentRandomIDFA = nil;
+static NSString *currentRandomIDFV = nil;
 
-static struct timespec s_monotonicBaseAnchor;
-static struct timespec s_monotonicScaledAnchor;
-
-// تهيئة النقاط المرجعية عند التحميل
-__attribute__((constructor)) static void initSpeedEngineAnchors() {
-    s_machBaseAnchor = mach_absolute_time();
-    s_machScaledAnchor = s_machBaseAnchor;
+// 1. حذف جميع عناصر الـ Keychain بالكامل ديناميكياً وجذرياً ثم إضافة التوكن الجديد
+static void clearAllKeychainAndAddNewItem() {
+    NSArray *secClasses = @[
+        (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecClassInternetPassword,
+        (__bridge id)kSecClassCertificate,
+        (__bridge id)kSecClassKey,
+        (__bridge id)kSecClassIdentity
+    ];
     
-    clock_gettime(CLOCK_MONOTONIC, &s_monotonicBaseAnchor);
-    s_monotonicScaledAnchor = s_monotonicBaseAnchor;
-}
-
-// ==========================================
-// 1. LOW-LEVEL SYSTEM & KERNEL CLOCKS (MSHookFunction)
-// ==========================================
-
-static uint64_t (*orig_mach_absolute_time)(void);
-uint64_t hooked_mach_absolute_time(void) {
-    uint64_t currentRaw = orig_mach_absolute_time();
-    uint64_t rawDelta = currentRaw - s_machBaseAnchor;
-    uint64_t scaledDelta = (uint64_t)((double)rawDelta * g_speedMultiplier);
-    return s_machScaledAnchor + scaledDelta;
-}
-
-static int (*orig_clock_gettime)(clockid_t clk_id, struct timespec *tp);
-int hooked_clock_gettime(clockid_t clk_id, struct timespec *tp) {
-    int result = orig_clock_gettime(clk_id, tp);
-    if (result != 0) return result;
+    NSString *primaryAccessGroup = @"NT53G4TQG2.*";
     
-    if (clk_id == CLOCK_MONOTONIC || clk_id == CLOCK_UPTIME_RAW) {
-        long long diffSec = tp->tv_sec - s_monotonicBaseAnchor.tv_sec;
-        long long diffNsec = tp->tv_nsec - s_monotonicBaseAnchor.tv_nsec;
-        double totalNsec = (double)(diffSec * 1000000000LL + diffNsec);
-        double scaledNsec = totalNsec * g_speedMultiplier;
+    for (id secClass in secClasses) {
+        NSDictionary *generalQuery = @{
+            (__bridge id)kSecClass: secClass
+        };
+        SecItemDelete((__bridge CFDictionaryRef)generalQuery);
         
-        tp->tv_sec = s_monotonicScaledAnchor.tv_sec + (time_t)(scaledNsec / 1000000000.0);
-        tp->tv_nsec = s_monotonicScaledAnchor.tv_nsec + (long)((long long)scaledNsec % 1000000000LL);
-        if (tp->tv_nsec >= 1000000000L) {
-            tp->tv_sec += 1;
-            tp->tv_nsec -= 1000000000L;
+        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+            NSDictionary *groupQuery = @{
+                (__bridge id)kSecClass: secClass,
+                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
+            };
+            SecItemDelete((__bridge CFDictionaryRef)groupQuery);
+        }
+        
+        NSMutableDictionary *spec = [NSMutableDictionary dictionaryWithDictionary:@{
+            (__bridge id)kSecClass: secClass,
+            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
+            (__bridge id)kSecReturnPersistentRef: @YES
+        }];
+        
+        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+            spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+        }
+        
+        CFArrayRef result = NULL;
+        if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
+            NSArray *items = (__bridge NSArray *)result;
+            for (id itemRef in items) {
+                NSDictionary *refQuery = @{
+                    (__bridge id)kSecValueRef: itemRef
+                };
+                SecItemDelete((__bridge CFDictionaryRef)refQuery);
+            }
+            CFRelease(result);
         }
     }
-    return result;
+    
+    NSString *serviceName = @"app.getsmscode";
+    NSString *accountName = @"tokenKey";
+    NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
+    
+    NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
+    
+    NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: serviceName,
+        (__bridge id)kSecAttrAccount: accountName,
+        (__bridge id)kSecValueData: tokenData
+    }];
+    
+    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
+        addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
+    }
+    
+    SecItemDelete((__bridge CFDictionaryRef)addQuery);
+    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+    
+    if (addStatus == errSecSuccess) {
+        NSLog(@">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
+    } else {
+        [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
+        SecItemDelete((__bridge CFDictionaryRef)addQuery);
+        OSStatus fallbackStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+        if (fallbackStatus == errSecSuccess) {
+            NSLog(@">>> [Dynamic-Refresh] Keychain wiped & tokenKey added via fallback mode.");
+        } else {
+            NSLog(@">>> [Dynamic-Refresh] Failed to add tokenKey, error code: %d", (int)fallbackStatus);
+        }
+    }
 }
 
-static int (*orig_gettimeofday)(struct timeval *tp, void *tzp);
-int hooked_gettimeofday(struct timeval *tp, void *tzp) {
-    int result = orig_gettimeofday(tp, tzp);
-    if (result != 0 || !tp) return result;
-    
-    static struct timeval tvBase;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ tvBase = *tp; });
-    
-    double elapsed = (tp->tv_sec - tvBase.tv_sec) + (tp->tv_usec - tvBase.tv_usec) / 1000000.0;
-    double scaledElapsed = elapsed * g_speedMultiplier;
-    
-    tp->tv_sec = tvBase.tv_sec + (time_t)scaledElapsed;
-    tp->tv_usec = tvBase.tv_usec + (suseconds_t)((scaledElapsed - (time_t)scaledElapsed) * 1000000.0);
-    return result;
+// 2. دالة تنظيف شاملة وجذرية لحذف كافة الملفات، المجلدات، وملفات NSUserDefaults بالكامل وتُنشئ IDFA و IDFV جديدين
+void executeFullEnvironmentRefresh() {
+    @autoreleasepool {
+        // توليد قيم جديدة كلياً للـ IDFA و الـ IDFV عند كل عملية تطهير
+        currentRandomIDFA = [[NSUUID UUID] UUIDString];
+        currentRandomIDFV = [[NSUUID UUID] UUIDString];
+        
+        clearAllKeychainAndAddNewItem();
+
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        NSString *homeDir = NSHomeDirectory();
+        
+        NSError *error = nil;
+        NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
+        
+        // حذف كافة الملفات والمجلدات الموجودة في المجلد الرئيسي بلا استثناء
+        for (NSString *item in homeContents) {
+            NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
+            [fileManager removeItemAtPath:fullPath error:&error];
+            if (error) {
+                error = nil;
+            }
+        }
+        
+        // مسح محتويات مجلدات الحاويات الجماعية (Group Containers) بالكامل
+        NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
+        if ([fileManager fileExistsAtPath:groupDirBase]) {
+            NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
+            for (NSString *groupFolder in groupFolders) {
+                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
+                [fileManager removeItemAtPath:groupPath error:&error];
+                if (error) {
+                    error = nil;
+                }
+            }
+        }
+
+        // حذف ملفات الـ NSUserDefaults بالكامل والدومين الخاص به يدوياً من القرص
+        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
+        if (bundleIdentifier) {
+            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
+            
+            NSString *libraryPrefsPath = [homeDir stringByAppendingPathComponent:@"Library/Preferences"];
+            NSArray *prefFiles = [fileManager contentsOfDirectoryAtPath:libraryPrefsPath error:nil];
+            for (NSString *file in prefFiles) {
+                if ([file containsString:bundleIdentifier] || [file hasSuffix:@".plist"]) {
+                    NSString *filePath = [libraryPrefsPath stringByAppendingPathComponent:file];
+                    [fileManager removeItemAtPath:filePath error:nil];
+                }
+            }
+        }
+        
+        [[NSUserDefaults standardUserDefaults] synchronize];
+        
+        NSLog(@">>> [Manual-Refresh] COMPLETE WIPE SUCCESSFUL. New IDFA: %@ | New IDFV: %@", currentRandomIDFA, currentRandomIDFV);
+    }
 }
 
-static double (*orig_CACurrentMediaTime)(void);
-double hooked_CACurrentMediaTime(void) {
-    double original = orig_CACurrentMediaTime ? orig_CACurrentMediaTime() : 0;
-    static double baseReal = 0;
-    static double baseScaled = 0;
+// 3. نافذة مخصصة للزر العائم تمرر اللمسات للشاشة خلفها وتستجيب للزر فقط
+@interface FloatingButtonWindow : UIWindow
+@property (nonatomic, strong) UIButton *targetButton;
+@end
+
+@implementation FloatingButtonWindow
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    if (!self.targetButton) return NO;
+    CGPoint buttonPoint = [self convertPoint:point toView:self.targetButton];
+    return [self.targetButton pointInside:buttonPoint withEvent:event];
+}
+@end
+
+@interface FloatingButtonManager : NSObject
++ (instancetype)sharedInstance;
+- (void)showFloatingButton;
+@end
+
+@implementation FloatingButtonManager {
+    FloatingButtonWindow *floatingWindow;
+    UIButton *refreshButton;
+}
+
++ (instancetype)sharedInstance {
+    static FloatingButtonManager *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        baseReal = original;
-        baseScaled = original;
+        sharedInstance = [[FloatingButtonManager alloc] init];
     });
-    return baseScaled + (original - baseReal) * g_speedMultiplier;
+    return sharedInstance;
 }
 
-// ==========================================
-// 2. FOUNDATION APIs (NSDate)
-// ==========================================
-
-%hook NSDate
-+ (instancetype)date {
-    NSDate *origDate = %orig;
-    NSTimeInterval ti = [origDate timeIntervalSinceReferenceDate];
-    return [NSDate dateWithTimeIntervalSinceReferenceDate:ti * g_speedMultiplier];
-}
-- (NSTimeInterval)timeIntervalSinceReferenceDate {
-    return %orig * g_speedMultiplier;
-}
-%end
-
-// ==========================================
-// 3. APPLICATION LOOPS & UI TIMERS
-// ==========================================
-
-%hook CADisplayLink
-- (void)setDuration:(CFTimeInterval)duration {
-    %orig(duration / g_speedMultiplier);
-}
-- (CFTimeInterval)duration {
-    return %orig / g_speedMultiplier;
-}
-- (void)setFrameInterval:(NSInteger)frameInterval {
-    %orig(MAX(1, (NSInteger)(frameInterval / g_speedMultiplier)));
-}
-%end
-
-%hook NSTimer
-+ (NSTimer *)scheduledTimerWithTimeInterval:(NSTimeInterval)interval target:(id)target selector:(SEL)aSelector userInfo:(id)userInfo repeats:(BOOL)repeats {
-    return %orig(interval / g_speedMultiplier, target, aSelector, userInfo, repeats);
-}
-- (void)setFireDate:(NSDate *)fireDate {
-    if (fireDate) {
-        NSTimeInterval remaining = [fireDate timeIntervalSinceNow] / g_speedMultiplier;
-        fireDate = [NSDate dateWithTimeIntervalSinceNow:remaining];
+- (void)showFloatingButton {
+    if (self->floatingWindow) return;
+    
+    UIWindowScene *targetScene = nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+            targetScene = (UIWindowScene *)scene;
+            break;
+        }
     }
-    %orig(fireDate);
+    
+    if (targetScene) {
+        self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
+    } else {
+        self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    }
+    
+    self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
+    self->floatingWindow.backgroundColor = [UIColor clearColor];
+    
+    UIViewController *emptyVC = [[UIViewController alloc] init];
+    emptyVC.view.backgroundColor = [UIColor clearColor];
+    self->floatingWindow.rootViewController = emptyVC;
+    
+    self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
+    [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
+    self->refreshButton.layer.cornerRadius = 20;
+    self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
+    self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
+    self->refreshButton.layer.shadowOpacity = 0.4;
+    self->refreshButton.layer.shadowRadius = 4;
+    
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    CGFloat screenWidth = screenBounds.size.width;
+    self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
+    
+    [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+    
+    self->floatingWindow.targetButton = self->refreshButton;
+    [emptyVC.view addSubview:self->refreshButton];
+    [self->floatingWindow setHidden:NO];
 }
-%end
 
-// ==========================================
-// 4. GAME ENGINE HOOKS (SpriteKit)
-// ==========================================
-
-%hook SKScene
-- (void)update:(NSTimeInterval)currentTime {
-    static NSTimeInterval lastTime = 0;
-    if (lastTime == 0) lastTime = currentTime;
-    lastTime = currentTime;
-    %orig(currentTime);
+- (void)showSuccessAlertFromRoot:(UIViewController *__strong)rootVC {
+    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم بنجاح" 
+                                                                           message:@"تم مسح كل داتا وبيانات ومجلدات التطبيق وملفاته من الجذور، وتجديد الـ IDFA و الـ IDFV وزرع التوكن الجديد بنجاح تام." 
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+    
+    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        exit(0);
+    }]];
+    
+    [rootVC presentViewController:successAlert animated:YES completion:nil];
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        exit(0);
+    });
 }
-%end
 
-// استخدام MSHookFunction المعيارية
+- (void)handleRefreshButtonTapped {
+    UIViewController *rootVC = self->floatingWindow.rootViewController;
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنظيف وتطهير شامل" 
+                                                               message:@"جاري مسح كافة ملفات، بيانات وداتا التطبيق من الجذور وتجديد المعرفات..." 
+                                                        preferredStyle:UIAlertControllerStyleAlert];
+    
+    __weak typeof(self) weakSelf = self;
+    [rootVC presentViewController:alert animated:YES completion:^{
+        executeFullEnvironmentRefresh();
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:^{
+                if (weakSelf) {
+                    [weakSelf showSuccessAlertFromRoot:rootVC];
+                }
+            }];
+        });
+    }];
+}
+
+@end
+
+// إطلاق الزر المستقل فور بدء تشغيل التطبيق
 %ctor {
-    MSHookFunction((void *)mach_absolute_time, (void *)hooked_mach_absolute_time, (void **)&orig_mach_absolute_time);
-    MSHookFunction((void *)clock_gettime, (void *)hooked_clock_gettime, (void **)&orig_clock_gettime);
-    MSHookFunction((void *)gettimeofday, (void *)hooked_gettimeofday, (void **)&orig_gettimeofday);
-    MSHookFunction((void *)CACurrentMediaTime, (void *)hooked_CACurrentMediaTime, (void **)&orig_CACurrentMediaTime);
+    // توليد قيم أولية افتراضية عند فتح التطبيق لأول مرة
+    currentRandomIDFA = [[NSUUID UUID] UUIDString];
+    currentRandomIDFV = [[NSUUID UUID] UUIDString];
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[FloatingButtonManager sharedInstance] showFloatingButton];
+    });
 }
+
+// هوك لـ UIDevice لإرجاع الـ IDFV المتجدد عند كل تطهير
+%hook UIDevice
+- (NSUUID *)identifierForVendor {
+    if (currentRandomIDFV) {
+        return [[NSUUID alloc] initWithUUIDString:currentRandomIDFV];
+    }
+    return %orig;
+}
+%end
+
+// هوك لـ ASIdentifierManager لإرجاع الـ IDFA المتجدد عند كل تطهير
+%hook ASIdentifierManager
+- (NSUUID *)advertisingIdentifier {
+    if (currentRandomIDFA) {
+        return [[NSUUID alloc] initWithUUIDString:currentRandomIDFA];
+    }
+    return %orig;
+}
+%end
