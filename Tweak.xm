@@ -142,7 +142,6 @@ void executeFullEnvironmentRefresh() {
     static FloatingButtonManager *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        sharedInstance = [[FloatingButtonManager isos]; // safe init
         sharedInstance = [[FloatingButtonManager alloc] init];
     });
     return sharedInstance;
@@ -201,7 +200,6 @@ void executeFullEnvironmentRefresh() {
         }
     }
     
-    // حفظ اسم كلاس الشاشة الحالية أو الـ Tab أيا كانت
     if (targetWindow && targetWindow.rootViewController) {
         UIViewController *topVC = targetWindow.rootViewController;
         while (topVC.presentedViewController) {
