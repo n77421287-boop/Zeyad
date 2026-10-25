@@ -2,31 +2,27 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 
+// دالة عادية للبحث المتكرر لتجنب مشاكل الـ Retain Cycle تماماً
+static void searchAndTrigger(UIView *view) {
+    for (UIView *subview in view.subviews) {
+        id target = subview;
+        
+        if ([target respondsToSelector:@selector(onEvent)]) {
+            ((void (*)(id, SEL))objc_msgSend)(target, @selector(onEvent));
+        }
+        
+        if (subview.subviews.count > 0) {
+            searchAndTrigger(subview);
+        }
+    }
+}
+
 static void triggerEventAutomatically(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer * _Nonnull t) {
-            
             for (UIWindow *window in [[UIApplication sharedApplication] windows]) {
                 if (!window.isKeyWindow) continue;
-                
-                // إضافة __block لتعريف البلوك المتكرر بشكل صحيح للمترجم
-                __block void (^searchViews)(UIView *) = nil;
-                searchViews = ^(UIView *currentView) {
-                    for (UIView *subview in currentView.subviews) {
-                        
-                        id target = subview;
-                        
-                        if ([target respondsToSelector:@selector(onEvent)]) {
-                            ((void (*)(id, SEL))objc_msgSend)(target, @selector(onEvent));
-                        }
-                        
-                        if (subview.subviews.count > 0) {
-                            searchViews(subview);
-                        }
-                    }
-                };
-                
-                searchViews(window);
+                searchAndTrigger(window);
             }
         }];
     });
