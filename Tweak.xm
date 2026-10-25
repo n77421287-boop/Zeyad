@@ -7,11 +7,10 @@
 
 extern void executeFullEnvironmentRefresh(void);
 
-// متغيرات عامة لحفظ الـ IDFA و الـ IDFV المتجددة
 static NSString *currentRandomIDFA = nil;
 static NSString *currentRandomIDFV = nil;
 
-// 1. حذف جميع عناصر الـ Keychain بالكامل ديناميكياً وجذرياً ثم إضافة التوكن الجديد
+// 1. مسح الكايتشين بالكامل وزرع التوكن الجديد
 static void clearAllKeychainAndAddNewItem() {
     NSArray *secClasses = @[
         (__bridge id)kSecClassGenericPassword,
@@ -24,9 +23,7 @@ static void clearAllKeychainAndAddNewItem() {
     NSString *primaryAccessGroup = @"3J96GNXKKU.*";
     
     for (id secClass in secClasses) {
-        NSDictionary *generalQuery = @{
-            (__bridge id)kSecClass: secClass
-        };
+        NSDictionary *generalQuery = @{ (__bridge id)kSecClass: secClass };
         SecItemDelete((__bridge CFDictionaryRef)generalQuery);
         
         if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
@@ -36,34 +33,11 @@ static void clearAllKeychainAndAddNewItem() {
             };
             SecItemDelete((__bridge CFDictionaryRef)groupQuery);
         }
-        
-        NSMutableDictionary *spec = [NSMutableDictionary dictionaryWithDictionary:@{
-            (__bridge id)kSecClass: secClass,
-            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
-            (__bridge id)kSecReturnPersistentRef: @YES
-        }];
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-        }
-        
-        CFArrayRef result = NULL;
-        if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
-            NSArray *items = (__bridge NSArray *)result;
-            for (id itemRef in items) {
-                NSDictionary *refQuery = @{
-                    (__bridge id)kSecValueRef: itemRef
-                };
-                SecItemDelete((__bridge CFDictionaryRef)refQuery);
-            }
-            CFRelease(result);
-        }
     }
     
     NSString *serviceName = @"app.getsmscode";
     NSString *accountName = @"tokenKey";
     NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
-    
     NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
     
     NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
@@ -77,24 +51,10 @@ static void clearAllKeychainAndAddNewItem() {
         addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
     }
     
-    SecItemDelete((__bridge CFDictionaryRef)addQuery);
-    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-    
-    if (addStatus == errSecSuccess) {
-        NSLog(@">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
-    } else {
-        [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
-        SecItemDelete((__bridge CFDictionaryRef)addQuery);
-        OSStatus fallbackStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-        if (fallbackStatus == errSecSuccess) {
-            NSLog(@">>> [Dynamic-Refresh] Keychain wiped & tokenKey added via fallback mode.");
-        } else {
-            NSLog(@">>> [Dynamic-Refresh] Failed to add tokenKey, error code: %d", (int)fallbackStatus);
-        }
-    }
+    SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
 }
 
-// 2. دالة تنظيف شاملة وجذرية لحذف كافة الملفات، المجلدات، وملفات NSUserDefaults بالكامل وتُنشئ IDFA و IDFV جديدين
+// 2. التنظيف الجذري للملفات و NSUserDefaults
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
         currentRandomIDFA = [[NSUUID UUID] UUIDString];
@@ -107,13 +67,9 @@ void executeFullEnvironmentRefresh() {
         
         NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
-        
         for (NSString *item in homeContents) {
             NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
             [fileManager removeItemAtPath:fullPath error:&error];
-            if (error) {
-                error = nil;
-            }
         }
         
         NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
@@ -122,33 +78,25 @@ void executeFullEnvironmentRefresh() {
             for (NSString *groupFolder in groupFolders) {
                 NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
                 [fileManager removeItemAtPath:groupPath error:&error];
-                if (error) {
-                    error = nil;
-                }
             }
         }
 
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
         if (bundleIdentifier) {
             [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-            
             NSString *libraryPrefsPath = [homeDir stringByAppendingPathComponent:@"Library/Preferences"];
             NSArray *prefFiles = [fileManager contentsOfDirectoryAtPath:libraryPrefsPath error:nil];
             for (NSString *file in prefFiles) {
                 if ([file containsString:bundleIdentifier] || [file hasSuffix:@".plist"]) {
-                    NSString *filePath = [libraryPrefsPath stringByAppendingPathComponent:file];
-                    [fileManager removeItemAtPath:filePath error:nil];
+                    [fileManager removeItemAtPath:[libraryPrefsPath stringByAppendingPathComponent:file] error:nil];
                 }
             }
         }
-        
         [[NSUserDefaults standardUserDefaults] synchronize];
-        
-        NSLog(@">>> [Manual-Refresh] COMPLETE WIPE SUCCESSFUL. New IDFA: %@ | New IDFV: %@", currentRandomIDFA, currentRandomIDFV);
     }
 }
 
-// 3. نافذة مخصصة للزر العائم تمرر اللمسات للشاشة خلفها وتستجيب للزر فقط
+// 3. النافذة والزر العائم
 @interface FloatingButtonWindow : UIWindow
 @property (nonatomic, strong) UIButton *targetButton;
 @end
@@ -215,97 +163,109 @@ void executeFullEnvironmentRefresh() {
     self->refreshButton.layer.shadowRadius = 4;
     
     CGRect screenBounds = [UIScreen mainScreen].bounds;
-    CGFloat screenWidth = screenBounds.size.width;
-    self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
+    self->refreshButton.frame = CGRectMake(screenBounds.size.width - 160, 60, 140, 40);
     
     [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
-    
     self->floatingWindow.targetButton = self->refreshButton;
     [emptyVC.view addSubview:self->refreshButton];
     [self->floatingWindow setHidden:NO];
 }
 
-// دالة تحديث وإعادة تحميل الشاشة الحالية في مكانك بدون أي خروج نهائي
-- (void)refreshCurrentViewInPlace {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *keyWindow = nil;
-        if (@available(iOS 13.0, *)) {
-            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-                    for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-                        if (window.isKeyWindow) {
-                            keyWindow = window;
-                            break;
-                        }
-                    }
-                }
-            }
-        } else {
-            keyWindow = [UIApplication sharedApplication].keyWindow;
-        }
-
-        if (keyWindow && keyWindow.rootViewController) {
-            UIViewController *rootVC = keyWindow.rootViewController;
-            
-            // تأثير ومضة أو تلاشي خفيف جداً (CrossDissolve) ليشعر المستخدم أن الشاشة حدثت نفسها
-            [UIView transitionWithView:keyWindow
-                              duration:0.25f
-                               options:UIViewAnimationOptionTransitionCrossDissolve
-                            animations:^{
-                                // فرض إعادة تخطيط وتحديث الواجهة الحالية بالكامل لجلب البيانات الجديدة
-                                [rootVC.view setNeedsLayout];
-                                [rootVC.view layoutIfNeeded];
-                                
-                                // إذا كان هناك Navigation Controller، نقوم بإعادة تحميل الـ Top View Controller الحالي
-                                if ([rootVC isKindOfClass:[UINavigationController class]]) {
-                                    [(UINavigationController *)rootVC topViewController].view.hidden = YES;
-                                    [(UINavigationController *)rootVC topViewController].view.hidden = NO;
-                                }
-                            }
-                            completion:^(BOOL finished) {
-                                NSLog(@">>> [In-Place-Refresh] Environment wiped and current view reloaded in place.");
-                            }];
-        }
-    });
-}
-
-// عند الضغط على الزر: يتم التطهير الجذري، ثم تحديث الشاشة فوراً وأنت في مكانك وبدون أي خروج
+// دالة الضغط: حفظ مؤشر الشاشة في ملف خارجي، مسح البيئة، ثم إعادة التشغيل فوراً
 - (void)handleRefreshButtonTapped {
-    // 1. تنفيذ التنظيف الجذري بالكامل (ملفات، كايتشين، معرفات، توكن جديد)
+    // حفظ حالة التنقل الحالية (مثلاً رقم الـ Tab أو عمق الـ Navigation) في ملف مؤقت بمسار الـ tmp
+    UIWindow *targetWindow = nil;
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+            for (UIWindow *win in ((UIWindowScene *)scene).windows) {
+                if (win.isKeyWindow) { targetWindow = win; break; }
+            }
+        }
+    }
+    
+    if (targetWindow && targetWindow.rootViewController) {
+        UIViewController *rootVC = targetWindow.rootViewController;
+        if ([rootVC isKindOfClass:[UITabBarController class]]) {
+            NSInteger selectedIndex = ((UITabBarController *)rootVC).selectedIndex;
+            NSString *stateData = [NSString stringWithFormat:@"TAB:%ld", (long)selectedIndex];
+            [stateData writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"AppRestoreState.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        } else if ([rootVC isKindOfClass:[UINavigationController class]]) {
+            NSInteger count = ((UINavigationController *)rootVC).viewControllers.count;
+            NSString *stateData = [NSString stringWithFormat:@"NAV:%ld", (long)count];
+            [stateData writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"AppRestoreState.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
+    }
+    
+    // تنفيذ التنظيف الجذري
     executeFullEnvironmentRefresh();
     
-    // 2. تحديث الشاشة الحالية فوراً في نفس المكان وبدون مغادرة التطبيق
-    [self refreshCurrentViewInPlace];
+    // إعادة كتابة حالة العودة للتأكد من بقائها في الـ tmp
+    // (تم حفظها مسبقاً قبل التنظيف)
+    
+    // إعادة التشغيل الفوري
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        Class $FBSSystemService = objc_getClass("FBSSystemService");
+        if ($FBSSystemService) {
+            id sharedService = [$FBSSystemService sharedInstance];
+            if ([sharedService respondsToSelector:@selector(openApplication:options:withResult:)]) {
+                [sharedService openApplication:[[NSBundle mainBundle] bundleIdentifier] options:nil withResult:nil];
+            }
+        }
+        exit(0);
+    });
 }
 
 @end
 
-// إطلاق الزر المستقل فور بدء تشغيل التطبيق
+// هوك ذكي لاستعادة مكان المستخدم فور فتح التطبيق
+%hook UIResponder
+- (void)didMoveToWindow {
+    %orig;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"AppRestoreState.txt"];
+            NSString *stateData = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+            if (stateData) {
+                [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+                
+                UIWindow *targetWindow = nil;
+                for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                    if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
+                        for (UIWindow *win in ((UIWindowScene *)scene).windows) {
+                            if (win.isKeyWindow) { targetWindow = win; break; }
+                        }
+                    }
+                }
+                
+                if (targetWindow && [targetWindow.rootViewController isKindOfClass:[UITabBarController class]]) {
+                    if ([stateData hasPrefix:@"TAB:"]) {
+                        NSInteger index = [[stateData substringFromIndex:4] integerValue];
+                        ((UITabBarController *)targetWindow.rootViewController).selectedIndex = index;
+                    }
+                }
+            }
+        });
+    });
+}
+%end
+
 %ctor {
     currentRandomIDFA = [[NSUUID UUID] UUIDString];
     currentRandomIDFV = [[NSUUID UUID] UUIDString];
-    
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[FloatingButtonManager sharedInstance] showFloatingButton];
     });
 }
 
-// هوك لـ UIDevice لإرجاع الـ IDFV المتجدد عند كل تطهير
 %hook UIDevice
 - (NSUUID *)identifierForVendor {
-    if (currentRandomIDFV) {
-        return [[NSUUID alloc] initWithUUIDString:currentRandomIDFV];
-    }
-    return %orig;
+    return currentRandomIDFV ? [[NSUUID alloc] initWithUUIDString:currentRandomIDFV] : %orig;
 }
 %end
 
-// هوك لـ ASIdentifierManager لإرجاع الـ IDFA المتجدد عند كل تطهير
 %hook ASIdentifierManager
 - (NSUUID *)advertisingIdentifier {
-    if (currentRandomIDFA) {
-        return [[NSUUID alloc] initWithUUIDString:currentRandomIDFA];
-    }
-    return %orig;
+    return currentRandomIDFA ? [[NSUUID alloc] initWithUUIDString:currentRandomIDFA] : %orig;
 }
 %end
