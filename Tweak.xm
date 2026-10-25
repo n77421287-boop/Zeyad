@@ -3,6 +3,7 @@
 #import <objc/message.h>
 
 #define PREF_KEY_ACTIVE @"AutoClickerIsActive"
+#define PREF_KEY_CLASS @"AutoClickerTargetClass"
 
 // دالة لتشغيل التكرار
 static void startAutoClicking(id target) {
@@ -12,7 +13,7 @@ static void startAutoClicking(id target) {
         activeTimers = [NSMapTable weakToStrongObjectsMapTable];
     });
 
-    if (target && ![activeTimers objectForKey:target]) {
+    if (target && ! [activeTimers objectForKey:target]) {
         dispatch_async(dispatch_get_main_queue(), ^{
             NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer * _Nonnull t) {
                 if (target && [target respondsToSelector:@selector(onEvent)]) {
@@ -35,11 +36,17 @@ static void startAutoClicking(id target) {
     NSString *actionString = NSStringFromSelector(action);
     if ([actionString isEqualToString:@"onEvent"]) {
         
-        // حفظ حالة أن التكرار مفعل
+        // 1. حفظ حالة التفعيل
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:PREF_KEY_ACTIVE];
+        
+        // 2. حفظ اسم كلاس الـ Target تماماً (سواء كان UIViewController أو كلاس مخصص)
+        if (target) {
+            NSString *targetClassName = NSStringFromClass([target class]);
+            [[NSUserDefaults standardUserDefaults] setObject:targetClassName forKey:PREF_KEY_CLASS];
+        }
         [[NSUserDefaults standardUserDefaults] synchronize];
 
-        // بدء التكرار الحالي
+        // 3. بدء التكرار الحالي
         if (target) {
             startAutoClicking(target);
         }
@@ -48,59 +55,26 @@ static void startAutoClicking(id target) {
 
 %end
 
-// دالة البحث العميق التلقائي (تتغلغل داخل جميع العناصر المتداخلة)
-static void deepSearchAndTrigger(UIView *view) {
-    if (!view) return;
+// مراقبة ظهور الشاشات والصفحات في التطبيق لاستئناف العمل فور ظهورها
+%hook UIViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
     
-    // التحقق مما إذا كان الكائن يستجيب للأكشن المطلوب
-    if ([view respondsToSelector:@selector(onEvent)]) {
-        startAutoClicking(view);
-        // يمكنك إزالة الـ return لو أردت تفعيل أكثر من زر يمتلك نفس الأكشن
-        return; 
-    }
-    
-    // البحث بشكل متكرر في جميع العناصر الفرعية مهما كانت عميقة
-    for (UIView *subview in view.subviews) {
-        deepSearchAndTrigger(subview);
+    // التحقق مما إذا كان التكرار مفعلاً مسبقاً
+    BOOL shouldAutoClick = [[NSUserDefaults standardUserDefaults] boolForKey:PREF_KEY_ACTIVE];
+    if (shouldAutoClick) {
+        NSString *savedClass = [[NSUserDefaults standardUserDefaults] stringForKey:PREF_KEY_CLASS];
+        if (savedClass) {
+            // هل الصفحة الحالية التي ظهرت الآن هي نفس الصفحة القديمة المسؤولة عن onEvent؟
+            if ([self isKindOfClass:NSClassFromString(savedClass)]) {
+                if ([self respondsToSelector:@selector(onEvent)]) {
+                    // تشغيل التكرار عليها فوراً تلقائياً!
+                    startAutoClicking(self);
+                }
+            }
+        }
     }
 }
 
-// عند فتح التطبيق بالكامل
-%ctor {
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
-        object:nil
-        queue:[NSOperationQueue mainQueue]
-        usingBlock:^(NSNotification * _Nonnull note) {
-            
-            BOOL shouldAutoClick = [[NSUserDefaults standardUserDefaults] boolForKey:PREF_KEY_ACTIVE];
-            
-            if (shouldAutoClick) {
-                // الانتظار لمدة 10 ثوانٍ كاملة حتى يتم تحميل الواجهة بالكامل
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    
-                    UIWindow *targetWindow = nil;
-                    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                        if (scene.activationState == UISceneActivationStateForegroundActive) {
-                            for (UIWindow *window in scene.windows) {
-                                if (window.isKeyWindow) {
-                                    targetWindow = window;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    
-                    if (!targetWindow) {
-                        targetWindow = [[[UIApplication sharedApplication] windows] firstObject];
-                    }
-                    
-                    if (targetWindow) {
-                        // بدء البحث العميق من النافذة الرئيسية
-                        deepSearchAndTrigger(targetWindow);
-                    }
-                    
-                    NSLog(@"[Tweak] انتهى البحث العميق بعد 10 ثوانٍ، وتم الاستئناف بنجاح!");
-                });
-            }
-        }];
-}
+%end
