@@ -58,10 +58,10 @@ int hooked_clock_gettime(clockid_t clk_id, struct timespec *tp) {
     return result;
 }
 
-static int (*orig_gettimeofday)(struct timeval *restrict tp, void *restrict tzp);
-int hooked_gettimeofday(struct timeval *restrict tp, void *restrict tzp) {
+static int (*orig_gettimeofday)(struct timeval *tp, void *tzp);
+int hooked_gettimeofday(struct timeval *tp, void *tzp) {
     int result = orig_gettimeofday(tp, tzp);
-    if (result != 0) return result;
+    if (result != 0 || !tp) return result;
     
     static struct timeval tvBase;
     static dispatch_once_t onceToken;
@@ -140,13 +140,12 @@ double hooked_CACurrentMediaTime(void) {
 - (void)update:(NSTimeInterval)currentTime {
     static NSTimeInterval lastTime = 0;
     if (lastTime == 0) lastTime = currentTime;
-    NSTimeInterval dt = (currentTime - lastTime) * g_speedMultiplier;
     lastTime = currentTime;
     %orig(currentTime);
 }
 %end
 
-// استخدام MSHookFunction المعيارية بدلاً من fishhook
+// استخدام MSHookFunction المعيارية
 %ctor {
     MSHookFunction((void *)mach_absolute_time, (void *)hooked_mach_absolute_time, (void **)&orig_mach_absolute_time);
     MSHookFunction((void *)clock_gettime, (void *)hooked_clock_gettime, (void **)&orig_clock_gettime);
