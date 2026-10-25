@@ -10,6 +10,13 @@ extern void executeFullEnvironmentRefresh(void);
 static NSString *currentRandomIDFA = nil;
 static NSString *currentRandomIDFV = nil;
 
+// مسار ملف الحفظ في مجلد الـ Documents
+static NSString * getRestoreStateFilePath() {
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *documentsDirectory = [paths objectAtIndex:0];
+    return [documentsDirectory stringByAppendingPathComponent:@"AppRestoreState.txt"];
+}
+
 // 1. مسح الكايتشين بالكامل وزرع التوكن الجديد
 static void clearAllKeychainAndAddNewItem() {
     NSArray *secClasses = @[
@@ -54,7 +61,7 @@ static void clearAllKeychainAndAddNewItem() {
     SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
 }
 
-// 2. التنظيف الجذري للملفات و NSUserDefaults
+// 2. التنظيف الجذري مع الاستثناء التام لملف الحالة في الـ Documents
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
         currentRandomIDFA = [[NSUUID UUID] UUIDString];
@@ -68,6 +75,20 @@ void executeFullEnvironmentRefresh() {
         NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
         for (NSString *item in homeContents) {
+            // استثناء مجلد Documents من الحذف المباشر لكي نحمي ملف الاستثناء داخله
+            if ([item isEqualToString:@"Documents"]) {
+                NSString *docsPath = [homeDir stringByAppendingPathComponent:@"Documents"];
+                NSArray *docContents = [fileManager contentsOfDirectoryAtPath:docsPath error:nil];
+                for (NSString *docItem in docContents) {
+                    // احذف كل شيء في الـ Documents ما عدا ملف الاستعادة الخاص بنا
+                    if (![docItem isEqualToString:@"AppRestoreState.txt"]) {
+                        NSString *fullDocItemPath = [docsPath stringByAppendingPathComponent:docItem];
+                        [fileManager removeItemAtPath:fullDocItemPath error:&error];
+                    }
+                }
+                continue;
+            }
+            
             NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
             [fileManager removeItemAtPath:fullPath error:&error];
         }
@@ -171,7 +192,7 @@ void executeFullEnvironmentRefresh() {
     [self->floatingWindow setHidden:NO];
 }
 
-// دالة الضغط: حفظ الحالة، التنظيف، ثم إعادة التشغيل الآمنة الخالية من الأخطاء
+// دالة الضغط: حفظ مكان الـ Tab في الـ Documents، ثم التنظيف (مع استثناء الملف)، ثم الإغلاق
 - (void)handleRefreshButtonTapped {
     UIWindow *targetWindow = nil;
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -182,56 +203,38 @@ void executeFullEnvironmentRefresh() {
         }
     }
     
-    if (targetWindow && targetWindow.rootViewController) {
-        UIViewController *rootVC = targetWindow.rootViewController;
-        if ([rootVC isKindOfClass:[UITabBarController class]]) {
-            NSInteger selectedIndex = ((UITabBarController *)rootVC).selectedIndex;
-            NSString *stateData = [NSString stringWithFormat:@"TAB:%ld", (long)selectedIndex];
-            [stateData writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"AppRestoreState.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        }
+    // 1. حفظ رقم الـ Tab الحالي في ملف داخل مجلد الـ Documents مباشرة قبل أي شيء
+    if (targetWindow && [targetWindow.rootViewController isKindOfClass:[UITabBarController class]]) {
+        NSInteger selectedIndex = ((UITabBarController *)targetWindow.rootViewController).selectedIndex;
+        NSString *stateData = [NSString stringWithFormat:@"TAB:%ld", (long)selectedIndex];
+        
+        NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        [[NSFileManager defaultManager] createDirectoryAtPath:docsPath withIntermediateDirectories:YES attributes:nil error:nil];
+        [stateData writeToFile:getRestoreStateFilePath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
     }
     
+    // 2. تنفيذ التنظيف الجذري (والذي سيستثني هذا الملف تماماً من الحذف)
     executeFullEnvironmentRefresh();
     
-    // إعادة التشغيل بطريقة نظيفة ومتوافقة تماماً مع الـ SDK
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        Class $FBSSystemService = objc_getClass("FBSSystemService");
-        if ($FBSSystemService) {
-            id sharedService = [$FBSSystemService sharedInstance];
-            // استخدام selector آمن ومتوافق لتفادي أخطاء التجميع
-            SEL openSelector = NSSelectorFromString(@"openApplication:options:client:withResult:");
-            if ([sharedService respondsToSelector:openSelector]) {
-                NSMethodSignature *signature = [sharedService methodSignatureForSelector:openSelector];
-                NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
-                [invocation setTarget:sharedService];
-                [invocation setSelector:openSelector];
-                NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-                [invocation setArgument:&bundleID atIndex:2];
-                id options = nil;
-                [invocation setArgument:&options atIndex:3];
-                id client = nil;
-                [invocation setArgument:&client atIndex:4];
-                id result = nil;
-                [invocation setArgument:&result atIndex:5];
-                [invocation invoke];
-            }
-        }
+    // 3. إغلاق التطبيق طبيعياً لتفتحه أنت يدوياً
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         exit(0);
     });
 }
 
 @end
 
-// استعادة مكان المستخدم فور فتح التطبيق
+// استعادة مكان المستخدم فور فتح التطبيق يدوياً
 %hook UIResponder
 - (void)didMoveToWindow {
     %orig;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"AppRestoreState.txt"];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSString *path = getRestoreStateFilePath();
             NSString *stateData = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             if (stateData) {
+                // حذف الملف فوراً بعد إرجاعك لمكانك حتى لا يتكرر الانتقال في الفتحات العادية القادمة
                 [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
                 
                 UIWindow *targetWindow = nil;
