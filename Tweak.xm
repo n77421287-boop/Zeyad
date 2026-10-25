@@ -75,12 +75,10 @@ void executeFullEnvironmentRefresh() {
         NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
         for (NSString *item in homeContents) {
-            // استثناء مجلد Documents من الحذف المباشر لكي نحمي ملف الاستثناء داخله
             if ([item isEqualToString:@"Documents"]) {
                 NSString *docsPath = [homeDir stringByAppendingPathComponent:@"Documents"];
                 NSArray *docContents = [fileManager contentsOfDirectoryAtPath:docsPath error:nil];
                 for (NSString *docItem in docContents) {
-                    // احذف كل شيء في الـ Documents ما عدا ملف الاستعادة الخاص بنا
                     if (![docItem isEqualToString:@"AppRestoreState.txt"]) {
                         NSString *fullDocItemPath = [docsPath stringByAppendingPathComponent:docItem];
                         [fileManager removeItemAtPath:fullDocItemPath error:&error];
@@ -144,6 +142,7 @@ void executeFullEnvironmentRefresh() {
     static FloatingButtonManager *sharedInstance = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        sharedInstance = [[FloatingButtonManager isos]; // safe init
         sharedInstance = [[FloatingButtonManager alloc] init];
     });
     return sharedInstance;
@@ -192,7 +191,6 @@ void executeFullEnvironmentRefresh() {
     [self->floatingWindow setHidden:NO];
 }
 
-// دالة الضغط: حفظ مكان الـ Tab في الـ Documents، ثم التنظيف (مع استثناء الملف)، ثم الإغلاق
 - (void)handleRefreshButtonTapped {
     UIWindow *targetWindow = nil;
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -203,20 +201,36 @@ void executeFullEnvironmentRefresh() {
         }
     }
     
-    // 1. حفظ رقم الـ Tab الحالي في ملف داخل مجلد الـ Documents مباشرة قبل أي شيء
-    if (targetWindow && [targetWindow.rootViewController isKindOfClass:[UITabBarController class]]) {
-        NSInteger selectedIndex = ((UITabBarController *)targetWindow.rootViewController).selectedIndex;
-        NSString *stateData = [NSString stringWithFormat:@"TAB:%ld", (long)selectedIndex];
+    // حفظ اسم كلاس الشاشة الحالية أو الـ Tab أيا كانت
+    if (targetWindow && targetWindow.rootViewController) {
+        UIViewController *topVC = targetWindow.rootViewController;
+        while (topVC.presentedViewController) {
+            topVC = topVC.presentedViewController;
+        }
         
-        NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-        [[NSFileManager defaultManager] createDirectoryAtPath:docsPath withIntermediateDirectories:YES attributes:nil error:nil];
-        [stateData writeToFile:getRestoreStateFilePath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSString *stateData = nil;
+        if ([topVC isKindOfClass:[UITabBarController class]]) {
+            UITabBarController *tab = (UITabBarController *)topVC;
+            stateData = [NSString stringWithFormat:@"TAB:%ld", (long)tab.selectedIndex];
+        } else if ([topVC isKindOfClass:[UINavigationController class]]) {
+            UINavigationController *nav = (UINavigationController *)topVC;
+            UIViewController *lastVC = nav.visibleViewController ?: nav.topViewController;
+            if (lastVC) {
+                stateData = [NSString stringWithFormat:@"CLASS:%@", NSStringFromClass([lastVC class])];
+            }
+        } else {
+            stateData = [NSString stringWithFormat:@"CLASS:%@", NSStringFromClass([topVC class])];
+        }
+        
+        if (stateData) {
+            NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+            [[NSFileManager defaultManager] createDirectoryAtPath:docsPath withIntermediateDirectories:YES attributes:nil error:nil];
+            [stateData writeToFile:getRestoreStateFilePath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
     }
     
-    // 2. تنفيذ التنظيف الجذري (والذي سيستثني هذا الملف تماماً من الحذف)
     executeFullEnvironmentRefresh();
     
-    // 3. إغلاق التطبيق طبيعياً لتفتحه أنت يدوياً
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         exit(0);
     });
@@ -224,17 +238,17 @@ void executeFullEnvironmentRefresh() {
 
 @end
 
-// استعادة مكان المستخدم فور فتح التطبيق يدوياً
-%hook UIResponder
-- (void)didMoveToWindow {
+// استعادة المكان أياً كانت نوع الصفحة فور ظهور أي شاشة رئيسية
+%hook UIViewController
+- (void)viewDidAppear:(BOOL)animated {
     %orig;
+    
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             NSString *path = getRestoreStateFilePath();
             NSString *stateData = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             if (stateData) {
-                // حذف الملف فوراً بعد إرجاعك لمكانك حتى لا يتكرر الانتقال في الفتحات العادية القادمة
                 [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
                 
                 UIWindow *targetWindow = nil;
@@ -246,10 +260,23 @@ void executeFullEnvironmentRefresh() {
                     }
                 }
                 
-                if (targetWindow && [targetWindow.rootViewController isKindOfClass:[UITabBarController class]]) {
+                if (targetWindow && targetWindow.rootViewController) {
                     if ([stateData hasPrefix:@"TAB:"]) {
                         NSInteger index = [[stateData substringFromIndex:4] integerValue];
-                        ((UITabBarController *)targetWindow.rootViewController).selectedIndex = index;
+                        UIViewController *rootVC = targetWindow.rootViewController;
+                        if ([rootVC isKindOfClass:[UITabBarController class]]) {
+                            ((UITabBarController *)rootVC).selectedIndex = index;
+                        }
+                    } else if ([stateData hasPrefix:@"CLASS:"]) {
+                        NSString *className = [stateData substringFromIndex:6];
+                        Class targetClass = NSClassFromString(className);
+                        if (targetClass) {
+                            UIViewController *newVC = [[targetClass alloc] init];
+                            UIViewController *rootVC = targetWindow.rootViewController;
+                            if ([rootVC isKindOfClass:[UINavigationController class]]) {
+                                [(UINavigationController *)rootVC pushViewController:newVC animated:NO];
+                            }
+                        }
                     }
                 }
             }
