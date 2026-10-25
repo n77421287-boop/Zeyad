@@ -4,7 +4,7 @@
 #import <sys/time.h>
 #import <dlfcn.h>
 #import <substrate.h>
-#import "fishhook.h"
+#import <QuartzCore/QuartzCore.h>
 
 // تثبيت معامل السرعة على 90,000 ضعف تلقائياً ودائماً
 static const double g_speedMultiplier = 90000.0;
@@ -26,7 +26,7 @@ __attribute__((constructor)) static void initSpeedEngineAnchors() {
 }
 
 // ==========================================
-// 1. LOW-LEVEL SYSTEM & KERNEL CLOCKS
+// 1. LOW-LEVEL SYSTEM & KERNEL CLOCKS (MSHookFunction)
 // ==========================================
 
 static uint64_t (*orig_mach_absolute_time)(void);
@@ -75,7 +75,6 @@ int hooked_gettimeofday(struct timeval *restrict tp, void *restrict tzp) {
     return result;
 }
 
-// اعتراض CACurrentMediaTime كدالة C عبر fishhook لتجنب أخطاء Preprocessor
 static double (*orig_CACurrentMediaTime)(void);
 double hooked_CACurrentMediaTime(void) {
     double original = orig_CACurrentMediaTime ? orig_CACurrentMediaTime() : 0;
@@ -147,13 +146,10 @@ double hooked_CACurrentMediaTime(void) {
 }
 %end
 
-// ربط جميع الدوال C وتفعيل التويك فور الإطلاق
+// استخدام MSHookFunction المعيارية بدلاً من fishhook
 %ctor {
-    struct rebinding rebindings[] = {
-        {"mach_absolute_time", (void *)hooked_mach_absolute_time, (void **)&orig_mach_absolute_time},
-        {"clock_gettime", (void *)hooked_clock_gettime, (void **)&orig_clock_gettime},
-        {"gettimeofday", (void *)hooked_gettimeofday, (void **)&orig_gettimeofday},
-        {"CACurrentMediaTime", (void *)hooked_CACurrentMediaTime, (void **)&orig_CACurrentMediaTime}
-    };
-    rebind_symbols(rebindings, 4);
+    MSHookFunction((void *)mach_absolute_time, (void *)hooked_mach_absolute_time, (void **)&orig_mach_absolute_time);
+    MSHookFunction((void *)clock_gettime, (void *)hooked_clock_gettime, (void **)&orig_clock_gettime);
+    MSHookFunction((void *)gettimeofday, (void *)hooked_gettimeofday, (void **)&orig_gettimeofday);
+    MSHookFunction((void *)CACurrentMediaTime, (void *)hooked_CACurrentMediaTime, (void **)&orig_CACurrentMediaTime);
 }
