@@ -2,29 +2,28 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 
-// متغير عام لتخزين أول زر تم الضغط عليه أثناء فتح التطبيق الحالي
-static __weak id lockedTarget = nil;
-static NSTimer *globalTimer = nil;
-
-// دالة لبدء التكرار الدائم كل نصف ثانية
-static void startPermanentAutoClicking(id target) {
-    if (!target) return;
-    
-    if (globalTimer && [globalTimer isValid]) {
-        return;
-    }
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        globalTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer * _Nonnull t) {
-            if (lockedTarget && [lockedTarget respondsToSelector:@selector(onEvent)]) {
-                // تنفيذ الأكشن على أول زر تم قفله كل نصف ثانية
-                ((void (*)(id, SEL))objc_msgSend)(lockedTarget, @selector(onEvent));
-            } else {
-                [t invalidate];
-                globalTimer = nil;
-            }
-        }];
+// دالة لتشغيل التكرار كل نصف ثانية لكل زر على حدة
+static void startAutoClickingForTarget(id target) {
+    static NSMapTable *activeTimers = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        activeTimers = [NSMapTable weakToStrongObjectsMapTable];
     });
+
+    if (target && ![activeTimers objectForKey:target]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // التكرار كل نصف ثانية (0.5)
+            NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer * _Nonnull t) {
+                if (target && [target respondsToSelector:@selector(onEvent)]) {
+                    ((void (*)(id, SEL))objc_msgSend)(target, @selector(onEvent));
+                } else {
+                    [t invalidate];
+                    [activeTimers removeObjectForKey:target];
+                }
+            }];
+            [activeTimers setObject:timer forKey:target];
+        });
+    }
 }
 
 %hook UIControl
@@ -35,14 +34,9 @@ static void startPermanentAutoClicking(id target) {
     NSString *actionString = NSStringFromSelector(action);
     if ([actionString isEqualToString:@"onEvent"]) {
         
-        // قفل أول زر يتم الضغط عليه في الجلسة الحالية فقط (بدون أي حفظ دائم)
-        if (!lockedTarget && target) {
-            lockedTarget = target;
-        }
-
-        // تشغيل التكرار
-        if (lockedTarget) {
-            startPermanentAutoClicking(lockedTarget);
+        // تشغيل التكرار فوراً لكل زر يتم الضغط عليه بدون أي قفل أو حفظ دائم
+        if (target) {
+            startAutoClickingForTarget(target);
         }
     }
 }
