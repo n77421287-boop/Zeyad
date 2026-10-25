@@ -94,34 +94,13 @@ static void clearAllKeychainAndAddNewItem() {
     }
 }
 
-// 2. تصفير وإعادة تعيين حالة صلاحية التتبع (ATT Status) لإجبار التطبيق على طلبها من جديد
-static void resetTrackingAuthorizationStatus() {
-    NSFileManager *fileManager = [NSFileManager defaultManager];
-    NSString *homeDir = NSHomeDirectory();
-    NSString *libraryDir = [homeDir stringByAppendingPathComponent:@"Library"];
-    
-    NSArray *libraryContents = [fileManager contentsOfDirectoryAtPath:libraryDir error:nil];
-    for (NSString *item in libraryContents) {
-        if ([item containsString:@"Caches"] || [item containsString:@"Preferences"] || [item containsString:@"WebKit"]) {
-            NSString *fullPath = [libraryDir stringByAppendingPathComponent:item];
-            if ([item containsString:@"Caches"]) {
-                NSArray *cachesFiles = [fileManager contentsOfDirectoryAtPath:fullPath error:nil];
-                for (NSString *cacheFile in cachesFiles) {
-                    [fileManager removeItemAtPath:[fullPath stringByAppendingPathComponent:cacheFile] error:nil];
-                }
-            }
-        }
-    }
-}
-
-// 3. دالة تنظيف شاملة وجذرية لحذف كافة الملفات والمجلدات وتجديد المعرفات وحالة الأذونات
+// 2. دالة تنظيف شاملة وجذرية لحذف كافة الملفات، المجلدات، وملفات NSUserDefaults بالكامل وتُنشئ IDFA و IDFV جديدين
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
         currentRandomIDFA = [[NSUUID UUID] UUIDString];
         currentRandomIDFV = [[NSUUID UUID] UUIDString];
         
         clearAllKeychainAndAddNewItem();
-        resetTrackingAuthorizationStatus();
 
         NSFileManager *fileManager = [NSFileManager defaultManager];
         NSString *homeDir = NSHomeDirectory();
@@ -169,7 +148,7 @@ void executeFullEnvironmentRefresh() {
     }
 }
 
-// 4. نافذة مخصصة للزر العائم
+// 3. نافذة مخصصة للزر العائم تمرر اللمسات للشاشة خلفها وتستجيب للزر فقط
 @interface FloatingButtonWindow : UIWindow
 @property (nonatomic, strong) UIButton *targetButton;
 @end
@@ -226,7 +205,7 @@ void executeFullEnvironmentRefresh() {
     self->floatingWindow.rootViewController = emptyVC;
     
     self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self->refreshButton setTitle:@"🔄 حذف كلي وإعادة تثبيت" forState:UIControlStateNormal];
+    [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
     [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
     self->refreshButton.layer.cornerRadius = 20;
@@ -237,7 +216,7 @@ void executeFullEnvironmentRefresh() {
     
     CGRect screenBounds = [UIScreen mainScreen].bounds;
     CGFloat screenWidth = screenBounds.size.width;
-    self->refreshButton.frame = CGRectMake(screenWidth - 190, 60, 170, 40);
+    self->refreshButton.frame = CGRectMake(screenWidth - 160, 60, 140, 40);
     
     [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
     
@@ -246,51 +225,60 @@ void executeFullEnvironmentRefresh() {
     [self->floatingWindow setHidden:NO];
 }
 
-- (void)showSuccessAlertFromRoot:(UIViewController *__strong)rootVC {
-    UIAlertController *successAlert = [UIAlertController alertControllerWithTitle:@"تم الحذف وإعادة التهيئة" 
-                                                                           message:@"تم مسح كافة ملفات التطبيق، تصفير الكاش، تجديد المعرفات، وإعادة ضبط أذونات النظام (مثل التتبع) كأنه تم تثبيت التطبيق لأول مرة." 
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-    
-    [successAlert addAction:[UIAlertAction actionWithTitle:@"حسناً (إعادة تشغيل)" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        exit(0);
-    }]];
-    
-    [rootVC presentViewController:successAlert animated:YES completion:nil];
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        exit(0);
+// دالة تحديث وإعادة تحميل الشاشة الحالية في مكانك بدون أي خروج نهائي
+- (void)refreshCurrentViewInPlace {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *keyWindow = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                    for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+                        if (window.isKeyWindow) {
+                            keyWindow = window;
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            keyWindow = [UIApplication sharedApplication].keyWindow;
+        }
+
+        if (keyWindow && keyWindow.rootViewController) {
+            UIViewController *rootVC = keyWindow.rootViewController;
+            
+            // تأثير ومضة أو تلاشي خفيف جداً (CrossDissolve) ليشعر المستخدم أن الشاشة حدثت نفسها
+            [UIView transitionWithView:keyWindow
+                              duration:0.25f
+                               options:UIViewAnimationOptionTransitionCrossDissolve
+                            animations:^{
+                                // فرض إعادة تخطيط وتحديث الواجهة الحالية بالكامل لجلب البيانات الجديدة
+                                [rootVC.view setNeedsLayout];
+                                [rootVC.view layoutIfNeeded];
+                                
+                                // إذا كان هناك Navigation Controller، نقوم بإعادة تحميل الـ Top View Controller الحالي
+                                if ([rootVC isKindOfClass:[UINavigationController class]]) {
+                                    [(UINavigationController *)rootVC topViewController].view.hidden = YES;
+                                    [(UINavigationController *)rootVC topViewController].view.hidden = NO;
+                                }
+                            }
+                            completion:^(BOOL finished) {
+                                NSLog(@">>> [In-Place-Refresh] Environment wiped and current view reloaded in place.");
+                            }];
+        }
     });
 }
 
+// عند الضغط على الزر: يتم التطهير الجذري، ثم تحديث الشاشة فوراً وأنت في مكانك وبدون أي خروج
 - (void)handleRefreshButtonTapped {
-    UIViewController *rootVC = self->floatingWindow.rootViewController;
+    // 1. تنفيذ التنظيف الجذري بالكامل (ملفات، كايتشين، معرفات، توكن جديد)
+    executeFullEnvironmentRefresh();
     
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"جاري الحذف الوهمي..." 
-                                                               message:@"جاري مسح الجذور وتصفير أذونات التتبع والنظام..." 
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    
-    __weak typeof(self) weakSelf = self;
-    [rootVC presentViewController:alert animated:YES completion:^{
-        executeFullEnvironmentRefresh();
-        
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:^{
-                if (weakSelf) {
-                    [weakSelf showSuccessAlertFromRoot:rootVC];
-                }
-            }];
-        });
-    }];
+    // 2. تحديث الشاشة الحالية فوراً في نفس المكان وبدون مغادرة التطبيق
+    [self refreshCurrentViewInPlace];
 }
 
 @end
-
-// 5. هوكات إضافية لإجبار نظام أذونات التتبع (ATT) على العودة للحالة الابتدائية (NotDetermined)
-%hook ATTrackingManager
-+ (NSUInteger)trackingAuthorizationStatus {
-    return 0; // 0 = ATTrackingManagerAuthorizationStatusNotDetermined
-}
-%end
 
 // إطلاق الزر المستقل فور بدء تشغيل التطبيق
 %ctor {
@@ -302,7 +290,7 @@ void executeFullEnvironmentRefresh() {
     });
 }
 
-// هوك لـ UIDevice لإرجاع الـ IDFV المتجدد
+// هوك لـ UIDevice لإرجاع الـ IDFV المتجدد عند كل تطهير
 %hook UIDevice
 - (NSUUID *)identifierForVendor {
     if (currentRandomIDFV) {
@@ -312,7 +300,7 @@ void executeFullEnvironmentRefresh() {
 }
 %end
 
-// هوك لـ ASIdentifierManager لإرجاع الـ IDFA المتجدد
+// هوك لـ ASIdentifierManager لإرجاع الـ IDFA المتجدد عند كل تطهير
 %hook ASIdentifierManager
 - (NSUUID *)advertisingIdentifier {
     if (currentRandomIDFA) {
