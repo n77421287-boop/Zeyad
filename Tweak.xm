@@ -48,6 +48,23 @@ static void startAutoClicking(id target) {
 
 %end
 
+// دالة البحث العميق التلقائي (تتغلغل داخل جميع العناصر المتداخلة)
+static void deepSearchAndTrigger(UIView *view) {
+    if (!view) return;
+    
+    // التحقق مما إذا كان الكائن يستجيب للأكشن المطلوب
+    if ([view respondsToSelector:@selector(onEvent)]) {
+        startAutoClicking(view);
+        // يمكنك إزالة الـ return لو أردت تفعيل أكثر من زر يمتلك نفس الأكشن
+        return; 
+    }
+    
+    // البحث بشكل متكرر في جميع العناصر الفرعية مهما كانت عميقة
+    for (UIView *subview in view.subviews) {
+        deepSearchAndTrigger(subview);
+    }
+}
+
 // عند فتح التطبيق بالكامل
 %ctor {
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
@@ -58,25 +75,31 @@ static void startAutoClicking(id target) {
             BOOL shouldAutoClick = [[NSUserDefaults standardUserDefaults] boolForKey:PREF_KEY_ACTIVE];
             
             if (shouldAutoClick) {
-                // الانتظار لمدة 10 ثوانٍ كاملة حتى يتم تحميل الواجهة بالكامل وتجاوز أي شاشات ترحيبية
+                // الانتظار لمدة 10 ثوانٍ كاملة حتى يتم تحميل الواجهة بالكامل
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     
-                    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
-                    if (!keyWindow) {
-                        keyWindow = [[UIApplication sharedApplication].windows firstObject];
-                    }
-                    
-                    void (^findAndTrigger)(UIView *) = ^(UIView *view) {
-                        if ([view respondsToSelector:@selector(onEvent)]) {
-                            startAutoClicking(view);
+                    UIWindow *targetWindow = nil;
+                    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                        if (scene.activationState == UISceneActivationStateForegroundActive) {
+                            for (UIWindow *window in scene.windows) {
+                                if (window.isKeyWindow) {
+                                    targetWindow = window;
+                                    break;
+                                }
+                            }
                         }
-                    };
-                    
-                    for (UIView *subview in keyWindow.subviews) {
-                        findAndTrigger(subview);
                     }
                     
-                    NSLog(@"[Tweak] مرّت 10 ثوانٍ، وتم استئناف التكرار تلقائياً بنجاح!");
+                    if (!targetWindow) {
+                        targetWindow = [[[UIApplication sharedApplication] windows] firstObject];
+                    }
+                    
+                    if (targetWindow) {
+                        // بدء البحث العميق من النافذة الرئيسية
+                        deepSearchAndTrigger(targetWindow);
+                    }
+                    
+                    NSLog(@"[Tweak] انتهى البحث العميق بعد 10 ثوانٍ، وتم الاستئناف بنجاح!");
                 });
             }
         }];
