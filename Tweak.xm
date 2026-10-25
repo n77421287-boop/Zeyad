@@ -1,65 +1,158 @@
-#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+#import <mach/mach_time.h>
+#import <time.h>
+#import <sys/time.h>
+#import <dlfcn.h>
+#import <substrate.h>
+#import "fishhook.h"
 
-// Define the denylist of domains to intercept
-static NSArray<NSString *> *const kDomainDenylist = @[
-    @"report.appmetrica.yandex.net",
-    @"api.get-sms-code.com",
-    @"qbwkvc-skadsdkless.appsflyerssdk.com",
-    @"qbwkvc-dynamic-report-api.appsflyerssdk.com",
-    @"app-analytics-services.com",
-    @"api2.amplitude.com",
-    @"firebaselogging-pa.googleapis.com"
-];
+// تثبيت معامل السرعة على 90,000 ضعف تلقائياً ودائماً
+static const double g_speedMultiplier = 90000.0;
 
-// Helper function to check if a given URL matches any domain in the denylist via partial matching
-static BOOL sollteBlockieren(NSURL *url) {
-    if (!url) return NO;
+// --- Anchor State for Monotonic Scaling ---
+static uint64_t s_machBaseAnchor = 0;
+static uint64_t s_machScaledAnchor = 0;
+
+static struct timespec s_monotonicBaseAnchor;
+static struct timespec s_monotonicScaledAnchor;
+
+// تهيئة النقاط المرجعية عند التحميل
+__attribute__((constructor)) static void initSpeedEngineAnchors() {
+    s_machBaseAnchor = mach_absolute_time();
+    s_machScaledAnchor = s_machBaseAnchor;
     
-    // Extract host, fallback to absolute string if host is nil
-    NSString *host = url.host ?: url.absoluteString;
-    if (!host) return NO;
-    
-    for (NSString *denylistedDomain in kDomainDenylist) {
-        // Partial match / containment logic as requested
-        if ([host rangeOfString:denylistedDomain options:NSCaseInsensitiveSearch].location != NSNotFound) {
-            NSLog(@"[TweakBlocker] 🚫 BLOCKED request to host: %@ (Matched rule: %@)", host, denylistedDomain);
-            return YES;
-        }
-    }
-    
-    return NO;
+    clock_gettime(CLOCK_MONOTONIC, &s_monotonicBaseAnchor);
+    s_monotonicScaledAnchor = s_monotonicBaseAnchor;
 }
 
-%hook NSURLSession
+// ==========================================
+// 1. LOW-LEVEL SYSTEM & KERNEL CLOCKS
+// ==========================================
 
-// 1. Hook: dataTaskWithRequest:
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request {
-    if (sollteBlockieren(request.URL)) {
-        NSURLSessionDataTask *dummyTask = %orig([NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]]);
-        [dummyTask cancel];
-        return dummyTask;
-    }
-    return %orig;
+static uint64_t (*orig_mach_absolute_time)(void);
+uint64_t hooked_mach_absolute_time(void) {
+    uint64_t currentRaw = orig_mach_absolute_time();
+    uint64_t rawDelta = currentRaw - s_machBaseAnchor;
+    uint64_t scaledDelta = (uint64_t)((double)rawDelta * g_speedMultiplier);
+    return s_machScaledAnchor + scaledDelta;
 }
 
-// 2. Hook: dataTaskWithRequest:completionHandler:
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
-    if (sollteBlockieren(request.URL)) {
-        if (completionHandler) {
-            NSError *error = [NSError errorWithDomain:NSURLErrorDomain
-                                                 code:NSURLErrorCancelled
-                                             userInfo:@{NSLocalizedDescriptionKey: @"Request blocked by network policy tweak."}];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completionHandler(nil, nil, error);
-            });
-        }
+static int (*orig_clock_gettime)(clockid_t clk_id, struct timespec *tp);
+int hooked_clock_gettime(clockid_t clk_id, struct timespec *tp) {
+    int result = orig_clock_gettime(clk_id, tp);
+    if (result != 0) return result;
+    
+    if (clk_id == CLOCK_MONOTONIC || clk_id == CLOCK_UPTIME_RAW) {
+        long long diffSec = tp->tv_sec - s_monotonicBaseAnchor.tv_sec;
+        long long diffNsec = tp->tv_nsec - s_monotonicBaseAnchor.tv_nsec;
+        double totalNsec = (double)(diffSec * 1000000000LL + diffNsec);
+        double scaledNsec = totalNsec * g_speedMultiplier;
         
-        NSURLSessionDataTask *dummyTask = %orig([NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]], nil);
-        [dummyTask cancel];
-        return dummyTask;
+        tp->tv_sec = s_monotonicScaledAnchor.tv_sec + (time_t)(scaledNsec / 1000000000.0);
+        tp->tv_nsec = s_monotonicScaledAnchor.tv_nsec + (long)((long long)scaledNsec % 1000000000LL);
+        if (tp->tv_nsec >= 1000000000L) {
+            tp->tv_sec += 1;
+            tp->tv_nsec -= 1000000000L;
+        }
     }
-    
-    return %orig(request, completionHandler);
+    return result;
 }
 
+static int (*orig_gettimeofday)(struct timeval *restrict tp, void *restrict tzp);
+int hooked_gettimeofday(struct timeval *restrict tp, void *restrict tzp) {
+    int result = orig_gettimeofday(tp, tzp);
+    if (result != 0) return result;
+    
+    static struct timeval tvBase;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ tvBase = *tp; });
+    
+    double elapsed = (tp->tv_sec - tvBase.tv_sec) + (tp->tv_usec - tvBase.tv_usec) / 1000000.0;
+    double scaledElapsed = elapsed * g_speedMultiplier;
+    
+    tp->tv_sec = tvBase.tv_sec + (time_t)scaledElapsed;
+    tp->tv_usec = tvBase.tv_usec + (suseconds_t)((scaledElapsed - (time_t)scaledElapsed) * 1000000.0);
+    return result;
+}
+
+// ==========================================
+// 2. CORE FOUNDATION & CORE ANIMATION APIs
+// ==========================================
+
+%hook CACurrentMediaTime
+double currentTime() {
+    double original = %orig;
+    static double baseReal = 0;
+    static double baseScaled = 0;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        baseReal = original;
+        baseScaled = original;
+    });
+    return baseScaled + (original - baseReal) * g_speedMultiplier;
+}
 %end
+
+%hook NSDate
++ (instancetype)date {
+    NSDate *origDate = %orig;
+    NSTimeInterval ti = [origDate timeIntervalSinceReferenceDate];
+    return [NSDate dateWithTimeIntervalSinceReferenceDate:ti * g_speedMultiplier];
+}
+- (NSTimeInterval)timeIntervalSinceReferenceDate {
+    return %orig * g_speedMultiplier;
+}
+%end
+
+// ==========================================
+// 3. APPLICATION LOOPS & UI TIMERS
+// ==========================================
+
+%hook CADisplayLink
+- (void)setDuration:(CFTimeInterval)duration {
+    %orig(duration / g_speedMultiplier);
+}
+- (CFTimeInterval)duration {
+    return %orig / g_speedMultiplier;
+}
+- (void)setFrameInterval:(NSInteger)frameInterval {
+    %orig(MAX(1, (NSInteger)(frameInterval / g_speedMultiplier)));
+}
+%end
+
+%hook NSTimer
++ (NSTimer *)scheduledTimerWithTimeInterval:(NSTimeInterval)interval target:(id)target selector:(SEL)aSelector userInfo:(id)userInfo repeats:(BOOL)repeats {
+    return %orig(interval / g_speedMultiplier, target, aSelector, userInfo, repeats);
+}
+- (void)setFireDate:(NSDate *)fireDate {
+    if (fireDate) {
+        NSTimeInterval remaining = [fireDate timeIntervalSinceNow] / g_speedMultiplier;
+        fireDate = [NSDate dateWithTimeIntervalSinceNow:remaining];
+    }
+    %orig(fireDate);
+}
+%end
+
+// ==========================================
+// 4. GAME ENGINE HOOKS (SpriteKit)
+// ==========================================
+
+%hook SKScene
+- (void)update:(NSTimeInterval)currentTime {
+    static NSTimeInterval lastTime = 0;
+    if (lastTime == 0) lastTime = currentTime;
+    NSTimeInterval dt = (currentTime - lastTime) * g_speedMultiplier;
+    lastTime = currentTime;
+    %orig(currentTime);
+}
+%end
+
+// ربط الدوال وتفعيل التويك فور الإطلاق
+%ctor {
+    struct rebinding rebindings[] = {
+        {"mach_absolute_time", (void *)hooked_mach_absolute_time, (void **)&orig_mach_absolute_time},
+        {"clock_gettime", (void *)hooked_clock_gettime, (void **)&orig_clock_gettime},
+        {"gettimeofday", (void *)hooked_gettimeofday, (void **)&orig_gettimeofday}
+    };
+    rebind_symbols(rebindings, 3);
+}
