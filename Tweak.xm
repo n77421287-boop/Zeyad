@@ -171,9 +171,8 @@ void executeFullEnvironmentRefresh() {
     [self->floatingWindow setHidden:NO];
 }
 
-// دالة الضغط: حفظ مؤشر الشاشة في ملف خارجي، مسح البيئة، ثم إعادة التشغيل فوراً
+// دالة الضغط: حفظ الحالة، التنظيف، ثم إعادة التشغيل الآمنة الخالية من الأخطاء
 - (void)handleRefreshButtonTapped {
-    // حفظ حالة التنقل الحالية (مثلاً رقم الـ Tab أو عمق الـ Navigation) في ملف مؤقت بمسار الـ tmp
     UIWindow *targetWindow = nil;
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
@@ -189,26 +188,32 @@ void executeFullEnvironmentRefresh() {
             NSInteger selectedIndex = ((UITabBarController *)rootVC).selectedIndex;
             NSString *stateData = [NSString stringWithFormat:@"TAB:%ld", (long)selectedIndex];
             [stateData writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"AppRestoreState.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        } else if ([rootVC isKindOfClass:[UINavigationController class]]) {
-            NSInteger count = ((UINavigationController *)rootVC).viewControllers.count;
-            NSString *stateData = [NSString stringWithFormat:@"NAV:%ld", (long)count];
-            [stateData writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"AppRestoreState.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }
     }
     
-    // تنفيذ التنظيف الجذري
     executeFullEnvironmentRefresh();
     
-    // إعادة كتابة حالة العودة للتأكد من بقائها في الـ tmp
-    // (تم حفظها مسبقاً قبل التنظيف)
-    
-    // إعادة التشغيل الفوري
+    // إعادة التشغيل بطريقة نظيفة ومتوافقة تماماً مع الـ SDK
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         Class $FBSSystemService = objc_getClass("FBSSystemService");
         if ($FBSSystemService) {
             id sharedService = [$FBSSystemService sharedInstance];
-            if ([sharedService respondsToSelector:@selector(openApplication:options:withResult:)]) {
-                [sharedService openApplication:[[NSBundle mainBundle] bundleIdentifier] options:nil withResult:nil];
+            // استخدام selector آمن ومتوافق لتفادي أخطاء التجميع
+            SEL openSelector = NSSelectorFromString(@"openApplication:options:client:withResult:");
+            if ([sharedService respondsToSelector:openSelector]) {
+                NSMethodSignature *signature = [sharedService methodSignatureForSelector:openSelector];
+                NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+                [invocation setTarget:sharedService];
+                [invocation setSelector:openSelector];
+                NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+                [invocation setArgument:&bundleID atIndex:2];
+                id options = nil;
+                [invocation setArgument:&options atIndex:3];
+                id client = nil;
+                [invocation setArgument:&client atIndex:4];
+                id result = nil;
+                [invocation setArgument:&result atIndex:5];
+                [invocation invoke];
             }
         }
         exit(0);
@@ -217,7 +222,7 @@ void executeFullEnvironmentRefresh() {
 
 @end
 
-// هوك ذكي لاستعادة مكان المستخدم فور فتح التطبيق
+// استعادة مكان المستخدم فور فتح التطبيق
 %hook UIResponder
 - (void)didMoveToWindow {
     %orig;
