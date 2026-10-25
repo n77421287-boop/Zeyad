@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 
 // Define the denylist of domains to intercept
-static NSArray<NSString *> *const kDomainDenylist = @Ω[
+static NSArray<NSString *> *const kDomainDenylist = @[
     @"report.appmetrica.yandex.net",
     @"api.get-sms-code.com",
     @"qbwkvc-skadsdkless.appsflyerssdk.com",
@@ -35,9 +35,6 @@ static BOOL sollteBlockieren(NSURL *url) {
 // 1. Hook: dataTaskWithRequest:
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request {
     if (sollteBlockieren(request.URL)) {
-        // Return a dummy task or let standard flow handle it, but to prevent crashes on non-nil expectations,
-        // we can return a task from a dummy session or a cancelled task. 
-        // Alternatively, returning nil can work if the caller handles it, but let's return a cancelled task to be safe.
         NSURLSessionDataTask *dummyTask = %orig([NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]]);
         [dummyTask cancel];
         return dummyTask;
@@ -49,17 +46,14 @@ static BOOL sollteBlockieren(NSURL *url) {
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
     if (sollteBlockieren(request.URL)) {
         if (completionHandler) {
-            // Construct a cancellation error so the calling app handles the failure gracefully
             NSError *error = [NSError errorWithDomain:NSURLErrorDomain
                                                  code:NSURLErrorCancelled
                                              userInfo:@{NSLocalizedDescriptionKey: @"Request blocked by network policy tweak."}];
-            // Invoke the completion handler asynchronously on the calling thread/queue
             dispatch_async(dispatch_get_main_queue(), ^{
                 completionHandler(nil, nil, error);
             });
         }
         
-        // Return a dummy cancelled task
         NSURLSessionDataTask *dummyTask = %orig([NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]], nil);
         [dummyTask cancel];
         return dummyTask;
