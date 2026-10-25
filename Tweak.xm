@@ -2,7 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
 
-// دالة لتشغيل التكرار كل ثانية لكل زر على حدة
+// دالة لتشغيل التكرار لكل زر بشكل مستقل تماماً
 static void startAutoClickingForTarget(id target) {
     static NSMapTable *activeTimers = nil;
     static dispatch_once_t onceToken;
@@ -12,7 +12,7 @@ static void startAutoClickingForTarget(id target) {
 
     if (target && ![activeTimers objectForKey:target]) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            // التكرار كل ثانية واحدة (1.0)
+            // التكرار كل ثانية واحدة (1.0) لكل زر على حدة
             NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer * _Nonnull t) {
                 if (target && [target respondsToSelector:@selector(onEvent)]) {
                     ((void (*)(id, SEL))objc_msgSend)(target, @selector(onEvent));
@@ -34,7 +34,7 @@ static void startAutoClickingForTarget(id target) {
     NSString *actionString = NSStringFromSelector(action);
     if ([actionString isEqualToString:@"onEvent"]) {
         
-        // تشغيل التكرار فوراً لكل زر يتم الضغط عليه بدون أي قفل أو حفظ دائم
+        // تفعيل التكرار لأي زر تضغطه، بحيث يعمل عدة أزرار معاً في نفس الوقت دون أن يلغي أحدها الآخر
         if (target) {
             startAutoClickingForTarget(target);
         }
