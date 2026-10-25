@@ -100,7 +100,8 @@ double currentTime() {
     return [NSDate dateWithTimeIntervalSinceReferenceDate:ti * g_speedMultiplier];
 }
 - (NSTimeInterval)timeIntervalSinceReferenceDate {
-    return %orig * g_speedMultiplier;
+    NSTimeInterval origVal = %orig;
+    return origVal * g_speedMultiplier;
 }
 %end
 
