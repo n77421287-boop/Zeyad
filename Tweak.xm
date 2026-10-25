@@ -1,304 +1,40 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <AdSupport/AdSupport.h>
-#import <AppTrackingTransparency/AppTrackingTransparency.h>
-#import <Security/Security.h>
-#import <objc/runtime.h>
+#import <objc/message.h>
 
-extern void executeFullEnvironmentRefresh(void);
+%hook UIControl
 
-static NSString *currentRandomIDFA = nil;
-static NSString *currentRandomIDFV = nil;
-
-// مسار ملف الحفظ في مجلد الـ Documents
-static NSString * getRestoreStateFilePath() {
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    NSString *documentsDirectory = [paths objectAtIndex:0];
-    return [documentsDirectory stringByAppendingPathComponent:@"AppRestoreState.txt"];
-}
-
-// 1. مسح الكايتشين بالكامل وزرع التوكن الجديد
-static void clearAllKeychainAndAddNewItem() {
-    NSArray *secClasses = @[
-        (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecClassInternetPassword,
-        (__bridge id)kSecClassCertificate,
-        (__bridge id)kSecClassKey,
-        (__bridge id)kSecClassIdentity
-    ];
-    
-    NSString *primaryAccessGroup = @"3J96GNXKKU.*";
-    
-    for (id secClass in secClasses) {
-        NSDictionary *generalQuery = @{ (__bridge id)kSecClass: secClass };
-        SecItemDelete((__bridge CFDictionaryRef)generalQuery);
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            NSDictionary *groupQuery = @{
-                (__bridge id)kSecClass: secClass,
-                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
-            };
-            SecItemDelete((__bridge CFDictionaryRef)groupQuery);
-        }
-    }
-    
-    NSString *serviceName = @"app.getsmscode";
-    NSString *accountName = @"tokenKey";
-    NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
-    NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
-    
-    NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: serviceName,
-        (__bridge id)kSecAttrAccount: accountName,
-        (__bridge id)kSecValueData: tokenData
-    }];
-    
-    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-        addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-    }
-    
-    SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-}
-
-// 2. التنظيف الجذري مع الاستثناء التام لملف الحالة في الـ Documents
-void executeFullEnvironmentRefresh() {
-    @autoreleasepool {
-        currentRandomIDFA = [[NSUUID UUID] UUIDString];
-        currentRandomIDFV = [[NSUUID UUID] UUIDString];
-        
-        clearAllKeychainAndAddNewItem();
-
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSString *homeDir = NSHomeDirectory();
-        
-        NSError *error = nil;
-        NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
-        for (NSString *item in homeContents) {
-            if ([item isEqualToString:@"Documents"]) {
-                NSString *docsPath = [homeDir stringByAppendingPathComponent:@"Documents"];
-                NSArray *docContents = [fileManager contentsOfDirectoryAtPath:docsPath error:nil];
-                for (NSString *docItem in docContents) {
-                    if (![docItem isEqualToString:@"AppRestoreState.txt"]) {
-                        NSString *fullDocItemPath = [docsPath stringByAppendingPathComponent:docItem];
-                        [fileManager removeItemAtPath:fullDocItemPath error:&error];
-                    }
-                }
-                continue;
-            }
-            
-            NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
-            [fileManager removeItemAtPath:fullPath error:&error];
-        }
-        
-        NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
-        if ([fileManager fileExistsAtPath:groupDirBase]) {
-            NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
-            for (NSString *groupFolder in groupFolders) {
-                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
-                [fileManager removeItemAtPath:groupPath error:&error];
-            }
-        }
-
-        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-        if (bundleIdentifier) {
-            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-            NSString *libraryPrefsPath = [homeDir stringByAppendingPathComponent:@"Library/Preferences"];
-            NSArray *prefFiles = [fileManager contentsOfDirectoryAtPath:libraryPrefsPath error:nil];
-            for (NSString *file in prefFiles) {
-                if ([file containsString:bundleIdentifier] || [file hasSuffix:@".plist"]) {
-                    [fileManager removeItemAtPath:[libraryPrefsPath stringByAppendingPathComponent:file] error:nil];
-                }
-            }
-        }
-        [[NSUserDefaults standardUserDefaults] synchronize];
-    }
-}
-
-// 3. النافذة والزر العائم
-@interface FloatingButtonWindow : UIWindow
-@property (nonatomic, strong) UIButton *targetButton;
-@end
-
-@implementation FloatingButtonWindow
-- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    if (!self.targetButton) return NO;
-    CGPoint buttonPoint = [self convertPoint:point toView:self.targetButton];
-    return [self.targetButton pointInside:buttonPoint withEvent:event];
-}
-@end
-
-@interface FloatingButtonManager : NSObject
-+ (instancetype)sharedInstance;
-- (void)showFloatingButton;
-@end
-
-@implementation FloatingButtonManager {
-    FloatingButtonWindow *floatingWindow;
-    UIButton *refreshButton;
-}
-
-+ (instancetype)sharedInstance {
-    static FloatingButtonManager *sharedInstance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        sharedInstance = [[FloatingButtonManager alloc] init];
-    });
-    return sharedInstance;
-}
-
-- (void)showFloatingButton {
-    if (self->floatingWindow) return;
-    
-    UIWindowScene *targetScene = nil;
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-            targetScene = (UIWindowScene *)scene;
-            break;
-        }
-    }
-    
-    if (targetScene) {
-        self->floatingWindow = [[FloatingButtonWindow alloc] initWithWindowScene:targetScene];
-    } else {
-        self->floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    }
-    
-    self->floatingWindow.windowLevel = UIWindowLevelAlert + 100;
-    self->floatingWindow.backgroundColor = [UIColor clearColor];
-    
-    UIViewController *emptyVC = [[UIViewController alloc] init];
-    emptyVC.view.backgroundColor = [UIColor clearColor];
-    self->floatingWindow.rootViewController = emptyVC;
-    
-    self->refreshButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self->refreshButton setTitle:@"🔄 تطهير شامل" forState:UIControlStateNormal];
-    [self->refreshButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self->refreshButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.85];
-    self->refreshButton.layer.cornerRadius = 20;
-    self->refreshButton.layer.shadowColor = [[UIColor blackColor] CGColor];
-    self->refreshButton.layer.shadowOffset = CGSizeMake(0, 2);
-    self->refreshButton.layer.shadowOpacity = 0.4;
-    self->refreshButton.layer.shadowRadius = 4;
-    
-    CGRect screenBounds = [UIScreen mainScreen].bounds;
-    self->refreshButton.frame = CGRectMake(screenBounds.size.width - 160, 60, 140, 40);
-    
-    [self->refreshButton addTarget:self action:@selector(handleRefreshButtonTapped) forControlEvents:UIControlEventTouchUpInside];
-    self->floatingWindow.targetButton = self->refreshButton;
-    [emptyVC.view addSubview:self->refreshButton];
-    [self->floatingWindow setHidden:NO];
-}
-
-- (void)handleRefreshButtonTapped {
-    UIWindow *targetWindow = nil;
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-            for (UIWindow *win in ((UIWindowScene *)scene).windows) {
-                if (win.isKeyWindow) { targetWindow = win; break; }
-            }
-        }
-    }
-    
-    if (targetWindow && targetWindow.rootViewController) {
-        UIViewController *topVC = targetWindow.rootViewController;
-        while (topVC.presentedViewController) {
-            topVC = topVC.presentedViewController;
-        }
-        
-        NSString *stateData = nil;
-        if ([topVC isKindOfClass:[UITabBarController class]]) {
-            UITabBarController *tab = (UITabBarController *)topVC;
-            stateData = [NSString stringWithFormat:@"TAB:%ld", (long)tab.selectedIndex];
-        } else if ([topVC isKindOfClass:[UINavigationController class]]) {
-            UINavigationController *nav = (UINavigationController *)topVC;
-            UIViewController *lastVC = nav.visibleViewController ?: nav.topViewController;
-            if (lastVC) {
-                stateData = [NSString stringWithFormat:@"CLASS:%@", NSStringFromClass([lastVC class])];
-            }
-        } else {
-            stateData = [NSString stringWithFormat:@"CLASS:%@", NSStringFromClass([topVC class])];
-        }
-        
-        if (stateData) {
-            NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-            [[NSFileManager defaultManager] createDirectoryAtPath:docsPath withIntermediateDirectories:YES attributes:nil error:nil];
-            [stateData writeToFile:getRestoreStateFilePath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        }
-    }
-    
-    executeFullEnvironmentRefresh();
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        exit(0);
-    });
-}
-
-@end
-
-// استعادة المكان أياً كانت نوع الصفحة فور ظهور أي شاشة رئيسية
-%hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
+- (void)sendAction:(SEL)action to:(id)target forEvent:(UIEvent *)event {
+    // 1. تنفيذ الضغطة الأصلية التي تفعلها أنت
     %orig;
-    
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            NSString *path = getRestoreStateFilePath();
-            NSString *stateData = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-            if (stateData) {
-                [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-                
-                UIWindow *targetWindow = nil;
-                for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                    if ([scene isKindOfClass:[UIWindowScene class]] && scene.activationState == UISceneActivationStateForegroundActive) {
-                        for (UIWindow *win in ((UIWindowScene *)scene).windows) {
-                            if (win.isKeyWindow) { targetWindow = win; break; }
-                        }
-                    }
-                }
-                
-                if (targetWindow && targetWindow.rootViewController) {
-                    if ([stateData hasPrefix:@"TAB:"]) {
-                        NSInteger index = [[stateData substringFromIndex:4] integerValue];
-                        UIViewController *rootVC = targetWindow.rootViewController;
-                        if ([rootVC isKindOfClass:[UITabBarController class]]) {
-                            ((UITabBarController *)rootVC).selectedIndex = index;
-                        }
-                    } else if ([stateData hasPrefix:@"CLASS:"]) {
-                        NSString *className = [stateData substringFromIndex:6];
-                        Class targetClass = NSClassFromString(className);
-                        if (targetClass) {
-                            UIViewController *newVC = [[targetClass alloc] init];
-                            UIViewController *rootVC = targetWindow.rootViewController;
-                            if ([rootVC isKindOfClass:[UINavigationController class]]) {
-                                [(UINavigationController *)rootVC pushViewController:newVC animated:NO];
-                            }
-                        }
-                    }
-                }
-            }
+
+    // 2. التحقق من أن الأكشن هو onEvent (كما ظهر في الفحص)[span_2](start_span)[span_2](end_span)[span_3](start_span)[span_3](end_span)
+    NSString *actionString = NSStringFromSelector(action);
+    if ([actionString isEqualToString:@"onEvent"]) {
+        
+        static NSMapTable *activeTimers = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            activeTimers = [NSMapTable weakToStrongObjectsMapTable];
         });
-    });
-}
-%end
 
-%ctor {
-    currentRandomIDFA = [[NSUUID UUID] UUIDString];
-    currentRandomIDFV = [[NSUUID UUID] UUIDString];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[FloatingButtonManager sharedInstance] showFloatingButton];
-    });
+        // 3. التأكد من عدم تكرار المؤقت لنفس الكائن
+        if (target && ![activeTimers objectForKey:target]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer * _Nonnull t) {
+                    
+                    // 4. هنا يتم عمل الـ (Call) تماماً مثل زر Call في الأداة لتنفيذ onEvent تلقائياً كل ثانيتين[span_4](start_span)[span_4](end_span)
+                    if (target && [target respondsToSelector:@selector(onEvent)]) {
+                        ((void (*)(id, SEL))objc_msgSend)(target, @selector(onEvent));
+                    } else {
+                        [t invalidate];
+                        [activeTimers removeObjectForKey:target];
+                    }
+                }];
+                [activeTimers setObject:timer forKey:target];
+            });
+        }
+    }
 }
 
-%hook UIDevice
-- (NSUUID *)identifierForVendor {
-    return currentRandomIDFV ? [[NSUUID alloc] initWithUUIDString:currentRandomIDFV] : %orig;
-}
-%end
-
-%hook ASIdentifierManager
-- (NSUUID *)advertisingIdentifier {
-    return currentRandomIDFA ? [[NSUUID alloc] initWithUUIDString:currentRandomIDFA] : %orig;
-}
 %end
