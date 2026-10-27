@@ -1,175 +1,192 @@
+// Tweak.xm
+// CHPUBG – Ultimate Privacy & Anti-Ban (Whitelist + Ad-Spoof + 0.50s Clean)
+// iOS arm64 / arm64e – Theos / Logos
+
 #import <Foundation/Foundation.h>
-#import <CoreLocation/CoreLocation.h>
+#import <UIKit/UIKit.h>
+#import <Security/Security.h>
 #import <AdSupport/AdSupport.h>
-#import <dlfcn.h>
 #import <objc/runtime.h>
+#import <substrate.h>
+#import <sys/stat.h>
+#import <stdio.h>
+#import <unistd.h>
+#import <stdlib.h>
+#import <string.h>
+#import <dispatch/dispatch.h>
 
-// متغيرات الجلسة الثابتة
-static NSString *sessionIP = nil;
-static NSString *sessionIDFA = nil;
-static NSString *const targetTimeZone = @"America/New_York";
-static NSString *const targetLocale = @"en-US";
-static NSString *const targetUserAgent = @"Mozilla/5.0 (iPhone; CPU iPhone OS 27_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Version/27.2";
+// ⬇️ سرعة المسح: كل نصف ثانية ⬇️
+#define CLEAN_INTERVAL 0.50 
 
-static const double targetLatitude = 40.7128;
-static const double targetLongitude = -74.0060;
+// المفتاح الوحيد المسموح له بالمرور في الـ Keychain (مفتاح الحساب)
+static NSString * const kAccountKey = @"com.tempnum.virtualnumber.deviceUUID";
 
-// تطهير الكاش والكوكيز بأمان ت تام
-static void purgePreviousSessionData() {
+// ------------------------------------------------------------
+// 1. مساعدات عامة وحماية العمليات
+// ------------------------------------------------------------
+static NSString *randomUUIDString(void) {
+    return [[NSUUID UUID] UUIDString];
+}
+
+static BOOL isUserApplicationProcess(void) {
+    static BOOL result;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        @try {
-            NSHTTPCookieStorage *cookieStorage = [NSHTTPCookieStorage sharedHTTPCookieStorage];
-            for (NSHTTPCookie *cookie in [cookieStorage cookies]) {
-                [cookieStorage deleteCookie:cookie];
-            }
-            [[NSURLCache sharedURLCache] removeAllCachedResponses];
-            [[NSUserDefaults standardUserDefaults] synchronize];
-        } @catch (NSException *exception) {
-            // منع أي استثناء محتمل
-        }
+        NSString *path = [[NSBundle mainBundle] bundlePath];
+        NSString *exe  = [NSProcessInfo processInfo].processName;
+        NSArray<NSString *> *systemProcs = @[@"SpringBoard", @"backboardd", @"launchd", @"securityd", @"sharingd", @"lsd", @"cfprefsd", @"distnoted", @"keybagd", @"amfid"];
+        if ([systemProcs containsObject:exe]) { result = NO; return; }
+        result = [path containsString:@"/Application/"] || [path containsString:@"/Bundle/Application/"];
     });
+    return result;
 }
 
-static NSString *getSessionResidentialIP() {
-    if (!sessionIP) {
-        purgePreviousSessionData();
-        sessionIDFA = [[NSUUID UUID] UUIDString];
-        
-        NSArray *verifiedIPs = @[
-            @"12.144.80.12",
-            @"12.144.80.25",
-            @"12.144.81.104",
-            @"12.155.20.45",
-            @"12.155.20.88",
-            @"12.210.15.30",
-            @"12.210.15.99",
-            @"12.88.105.30",
-            @"12.230.45.10",
-            @"12.230.45.55"
-        ];
-        
-        uint32_t randomIndex = arc4random_uniform((uint32_t)[verifiedIPs count]);
-        sessionIP = verifiedIPs[randomIndex];
-    }
-    return sessionIP;
-}
-
-static NSURLRequest *modifyRequest(NSURLRequest *request) {
-    if (!request) return nil;
-    @try {
-        NSMutableURLRequest *mutableReq = [request mutableCopy];
-        if (!mutableReq) return request;
-        
-        NSString *selectedIP = getSessionResidentialIP();
-        
-        [mutableReq setValue:selectedIP forHTTPHeaderField:@"X-Forwarded-For"];
-        [mutableReq setValue:selectedIP forHTTPHeaderField:@"Client-IP"];
-        [mutableReq setValue:selectedIP forHTTPHeaderField:@"X-Real-IP"];
-        [mutableReq setValue:selectedIP forHTTPHeaderField:@"True-Client-IP"];
-        [mutableReq setValue:selectedIP forHTTPHeaderField:@"X-Cluster-Client-IP"];
-        
-        [mutableReq setValue:targetLocale forHTTPHeaderField:@"Accept-Language"];
-        [mutableReq setValue:@"US" forHTTPHeaderField:@"X-App-Country"];
-        [mutableReq setValue:targetUserAgent forHTTPHeaderField:@"User-Agent"];
-        
-        return [mutableReq copy];
-    } @catch (NSException *e) {
-        return request;
-    }
-}
-
-// 1. تجاوز الشبكة (NSURLSession)
-%hook NSURLSession
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request {
-    return %orig(modifyRequest(request));
-}
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
-    return %orig(modifyRequest(request), completionHandler);
-}
-- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData {
-    return %orig(modifyRequest(request), bodyData);
-}
-- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
-    return %orig(modifyRequest(request), bodyData, completionHandler);
-}
-- (NSURLSessionDownloadTask *)downloadTaskWithRequest:(NSURLRequest *)request {
-    return %orig(modifyRequest(request));
-}
-- (NSURLSessionDownloadTask *)downloadTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURL *, NSURLResponse *, NSError *))completionHandler {
-    return %orig(modifyRequest(request), completionHandler);
-}
-%end
-
-// 2. تخدير الوقت
-%hook NSTimeZone
-+ (NSTimeZone *)localTimeZone {
-    NSTimeZone *tz = [NSTimeZone timeZoneWithName:targetTimeZone];
-    return tz ? tz : %orig;
-}
-+ (NSTimeZone *)systemTimeZone {
-    NSTimeZone *tz = [NSTimeZone timeZoneWithName:targetTimeZone];
-    return tz ? tz : %orig;
-}
-%end
-
-// 3. تخدير اللغة
-%hook NSLocale
-+ (id)currentLocale {
-    return [[NSLocale alloc] initWithLocaleIdentifier:targetLocale];
-}
-+ (id)preferredLanguages {
-    return @[targetLocale, @"en"];
-}
-%end
-
-// 4. محاكاة الموقع (GPS)
-%hook CLLocationManager
-- (CLLocation *)location {
-    return [[CLLocation alloc] initWithLatitude:targetLatitude longitude:targetLongitude];
-}
-- (void)startUpdatingLocation {
-    %orig;
-    @try {
-        if ([self delegate] && [[self delegate] respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
-            CLLocation *fakeLocation = [[CLLocation alloc] initWithLatitude:targetLatitude longitude:targetLongitude];
-            [[self delegate] locationManager:self didUpdateLocations:@[fakeLocation]];
+// ------------------------------------------------------------
+// 2. تنظيف الملفات المؤقتة (كل 0.5 ثانية)
+// ------------------------------------------------------------
+static void cleanPathsNow(void) {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *home = NSHomeDirectory();
+    NSArray *paths = @[
+        [home stringByAppendingPathComponent:@"Library/Caches"],
+        [home stringByAppendingPathComponent:@"tmp"],
+        [home stringByAppendingPathComponent:@"Library/Logs"]
+    ];
+    for (NSString *path in paths) {
+        NSArray *contents = [fm contentsOfDirectoryAtPath:path error:nil];
+        for (NSString *item in contents) {
+            [fm removeItemAtPath:[path stringByAppendingPathComponent:item] error:nil];
         }
-    } @catch (NSException *e) {}
-}
-%end
-
-// 5. محاكاة مزود الخدمة AT&T بأمان
-%hook CTTelephonyNetworkInfo
-- (id)subscriberCellularProvider {
-    id provider = %orig;
-    if (provider) {
-        @try {
-            // تعديل خصائص المزود القائم مباشرة إن وجد لتجنب الكراش
-            [provider setValue:@"AT&T" forKey:@"carrierName"];
-            [provider setValue:@"310" forKey:@"mobileCountryCode"];
-            [provider setValue:@"410" forKey:@"mobileNetworkCode"];
-            [provider setValue:@"us" forKey:@"isoCountryCode"];
-        } @catch (NSException *e) {}
     }
-    return provider;
+}
+
+static void startCleanerTimer(void) {
+    dispatch_queue_t q = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0);
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
+    if (!timer) return;
+    uint64_t interval = (uint64_t)(CLEAN_INTERVAL * NSEC_PER_SEC);
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), interval, 0);
+    dispatch_source_set_event_handler(timer, ^{ @autoreleasepool { cleanPathsNow(); } });
+    dispatch_resume(timer);
+}
+
+// ------------------------------------------------------------
+// 3. اعتراض NSUserDefaults (تزوير المعرفات والحفاظ على الحساب)
+// ------------------------------------------------------------
+%hook NSUserDefaults
+
+- (id)objectForKey:(NSString *)defaultName {
+    // تزوير معرف التطبيق لتبدو كجهاز جديد
+    if ([defaultName isEqualToString:@"GT_APP_ID"]) {
+        static NSString *fakeAppId;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{ fakeAppId = randomUUIDString(); });
+        return fakeAppId; 
+    }
+    // نسمح بقراءة auth_token بشكل طبيعي حتى لا يطردك من الحساب
+    return %orig;
+}
+
+- (void)setObject:(id)value forKey:(NSString *)defaultName {
+    // منع حفظ إعدادات وبصمات Firebase
+    if ([defaultName containsString:@"firebase-sessions"] || 
+        [defaultName isEqualToString:@"GT_LAST_CLOSED_TIME"]) {
+        return; 
+    }
+    %orig;
+}
+
+%end
+
+// ------------------------------------------------------------
+// 4. نظام القائمة البيضاء في Keychain (حظر شامل إلا مفتاح الحساب)
+// ------------------------------------------------------------
+static BOOL isAccountKey(NSDictionary *dict) {
+    if (!dict) return NO;
+    NSString *account = dict[(__bridge NSString *)kSecAttrAccount];
+    return [account isEqualToString:kAccountKey];
+}
+
+// 1. اعتراض البحث (Copy)
+OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef, CFTypeRef *);
+OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
+    NSDictionary *dict = (__bridge NSDictionary *)query;
+    if (isAccountKey(dict)) {
+        return orig_SecItemCopyMatching(query, result); 
+    }
+    if (result) *result = NULL;
+    return errSecItemNotFound;
+}
+
+// 2. اعتراض الإضافة (Add)
+OSStatus (*orig_SecItemAdd)(CFDictionaryRef, CFTypeRef *);
+OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
+    NSDictionary *dict = (__bridge NSDictionary *)attributes;
+    if (isAccountKey(dict)) {
+        return orig_SecItemAdd(attributes, result); 
+    }
+    if (result) *result = NULL;
+    return errSecSuccess; 
+}
+
+// 3. اعتراض التحديث (Update)
+OSStatus (*orig_SecItemUpdate)(CFDictionaryRef, CFDictionaryRef);
+OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) {
+    NSDictionary *dict = (__bridge NSDictionary *)query;
+    if (isAccountKey(dict)) {
+        return orig_SecItemUpdate(query, attributesToUpdate);
+    }
+    return errSecSuccess; 
+}
+
+// 4. اعتراض الحذف (Delete)
+OSStatus (*orig_SecItemDelete)(CFDictionaryRef);
+OSStatus my_SecItemDelete(CFDictionaryRef query) {
+    NSDictionary *dict = (__bridge NSDictionary *)query;
+    if (isAccountKey(dict)) {
+        return orig_SecItemDelete(query);
+    }
+    return errSecSuccess; 
+}
+
+// ------------------------------------------------------------
+// 5. تزوير بصمة الجهاز ومعرف الإعلانات (UDID & IDFA)
+// ------------------------------------------------------------
+%hook UIDevice
+- (NSUUID *)identifierForVendor {
+    static NSUUID *fake;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ fake = [[NSUUID alloc] initWithUUIDString:randomUUIDString()]; });
+    return fake;
+}
+- (NSUUID *)advertisingIdentifier {
+    return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
 }
 %end
 
-// 6. تزييف الـ IDFA بأمان تام دون فئات وهمية
 %hook ASIdentifierManager
 - (NSUUID *)advertisingIdentifier {
-    getSessionResidentialIP();
-    return sessionIDFA ? [[NSUUID alloc] initWithUUIDString:sessionIDFA] : %orig;
+    return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
 }
 - (BOOL)isAdvertisingTrackingEnabled {
-    return YES;
+    return YES; // نوهم التطبيق أن التتبع مفعل
 }
 %end
 
+// ------------------------------------------------------------
+// 6. التشغيل
+// ------------------------------------------------------------
 %ctor {
     @autoreleasepool {
-        dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony", RTLD_NOW);
-        getSessionResidentialIP(); // تهيئة الجلسة مبكراً بأمان
+        if (!isUserApplicationProcess()) return;
+
+        cleanPathsNow();
+        startCleanerTimer();
+
+        // تفعيل اعتراض الـ Keychain
+        MSHookFunction((void *)SecItemCopyMatching, (void *)my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching);
+        MSHookFunction((void *)SecItemAdd, (void *)my_SecItemAdd, (void **)&orig_SecItemAdd);
+        MSHookFunction((void *)SecItemUpdate, (void *)my_SecItemUpdate, (void **)&orig_SecItemUpdate);
+        MSHookFunction((void *)SecItemDelete, (void *)my_SecItemDelete, (void **)&orig_SecItemDelete);
     }
 }
