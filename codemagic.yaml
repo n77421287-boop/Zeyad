@@ -1,0 +1,23 @@
+workflows:
+  build-tweak:
+    name: Build iOS Tweak dylib
+    max_build_duration: 120
+    instance_type: mac_mini_m1
+    scripts:
+      - name: Install ldid
+        script: |
+          brew install ldid
+      - name: Setup Theos
+        script: |
+          rm -rf ~/theos
+          git clone --recursive https://github.com/theos/theos.git ~/theos
+          rm -rf ~/theos/sdks
+          git clone --depth=1 https://github.com/theos/sdks.git ~/theos/sdks
+      - name: Build Tweak
+        script: |
+          export THEOS=~/theos
+          make clean
+          make
+    artifacts:
+      - .theos/obj/**/*.dylib
+      - obj/**/*.dylib
