@@ -1,5 +1,5 @@
 #import <Foundation/Foundation.h>
-#import <CoreLocation/CoreLocation>
+#import <CoreLocation/CoreLocation.h>
 #import <AdSupport/AdSupport.h>
 
 // متغيرات الجلسة الثابتة
@@ -193,12 +193,11 @@ static NSURLRequest *modifyRequest(NSURLRequest *request) {
 // --- تزييف المعرّف الإعلاني (IDFA Spoofing) عبر ASIdentifierManager ---
 %subclass ASIdentifierManagerDummy : NSObject
 - (NSUUID *)advertisingIdentifier {
-    // التأكد من استدعاء دالة الجلسة لضمان توليد المعرّف الوهمي وثباته
     getSessionResidentialIP();
     return [[NSUUID alloc] initWithUUIDString:sessionIDFA];
 }
 - (BOOL)isAdvertisingTrackingEnabled {
-    return YES; // إظهار أن المستخدم مسموح له بالتتبع بصورة طبيعية لترفع Trust Score الجهاز
+    return YES;
 }
 %end
 
