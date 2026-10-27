@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreLocation/CoreLocation.h>
 #import <AdSupport/AdSupport.h>
+#import <dlfcn.h> // <-- تم إضافة هذا السطر لحل خطأ RTLD_NOW
 
 // متغيرات الجلسة الثابتة
 static NSString *sessionIP = nil;
