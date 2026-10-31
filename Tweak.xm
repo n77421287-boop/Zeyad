@@ -290,23 +290,22 @@ static void performAccountSwitchAndAlert(void) {
     saveUUIDToKeychain(nextUUID);
     
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *keyWindow = nil;
+        UIWindow *activeWindow = nil;
         if (@available(iOS 13.0, *)) {
             for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
                 if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
                     UIWindowScene *windowScene = (UIWindowScene *)scene;
                     for (UIWindow *w in windowScene.windows) {
                         if (w.isKeyWindow) {
-                            keyWindow = w;
+                            activeWindow = w;
                             break;
                         }
                     }
                 }
             }
         }
-        if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
         
-        UIViewController *rootVC = keyWindow.rootViewController;
+        UIViewController *rootVC = activeWindow ? activeWindow.rootViewController : nil;
         while (rootVC.presentedViewController) {
             rootVC = rootVC.presentedViewController;
         }
