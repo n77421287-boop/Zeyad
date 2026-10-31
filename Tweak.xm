@@ -311,7 +311,7 @@ static void performAccountSwitchAndAlert(void) {
         }
         
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🔄 تم تبديل الحساب تلقائياً"
-                                                                   message:@"تم الوصول إلى 395 نقطة وحذف البيانات.\nتم الانتقال للحساب التالي بنجاح.\n\nيرجى إغلاق التطبيق من الخلفية وفتحه مجدداً."
+                                                                   message:@"تم الوصول إلى 395 نقطة وحذف البيانات.\nتم الانتقال للحساب التالي بنجاح."
                                                             preferredStyle:UIAlertControllerStyleAlert];
         
         [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
@@ -322,6 +322,7 @@ static void performAccountSwitchAndAlert(void) {
             [rootVC presentViewController:alert animated:YES completion:nil];
         }
         
+        // إعادة وقت الانتظار إلى ثانية ونص (1.5 ثانية) قبل الخروج
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             exit(0);
         });
@@ -342,7 +343,7 @@ static void checkAndEnforceValidAccount(void) {
     }
 }
 
-static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSInteger statusCode, NSData *data, NSError *error) {
+static void logGodModeEvent(NSString *url, NSData *data) {
     checkAndEnforceValidAccount();
 
     if (!url || ![url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
@@ -368,7 +369,7 @@ static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, N
     }
 }
 
-// --- بروتوكول شبكة اعتراض النقاط ---
+// --- بروتوكول شبكة اعتراض النقاط (سريع وفوري) ---
 @interface GodModeNetworkProtocol : NSURLProtocol
 @end
 
@@ -393,10 +394,10 @@ static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, N
     
     NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
     NSURLSessionDataTask *task = [session dataTaskWithRequest:newReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-        logGodModeEvent(@"Protocol", newReq.HTTPMethod, newReq.URL.absoluteString, httpResp.statusCode, data, error);
-        
-        if (data) [self.client URLProtocol:self didLoadData:data];
+        if (data) {
+            logGodModeEvent(newReq.URL.absoluteString, data);
+            [self.client URLProtocol:self didLoadData:data];
+        }
         if (response) [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
         if (error) [self.client URLProtocol:self didFailWithError:error];
         else [self.client URLProtocolDidFinishLoading:self];
@@ -408,18 +409,17 @@ static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, N
 
 // إطلاق آلية المراقبة فور بدء تشغيل التطبيق
 %ctor {
-    // توليد قيم أولية افتراضية عند فتح التطبيق لأول مرة
     currentRandomIDFA = [[NSUUID UUID] UUIDString];
     currentRandomIDFV = [[NSUUID UUID] UUIDString];
     
     checkAndEnforceValidAccount();
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [NSURLProtocol registerClass:[GodModeNetworkProtocol class]];
     });
 }
 
-// هوك لـ UIDevice لإرجاع الـ IDFV المتجدد عند كل تطهير
+// هوك لـ UIDevice
 %hook UIDevice
 - (NSUUID *)identifierForVendor {
     if (currentRandomIDFV) {
@@ -429,7 +429,7 @@ static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, N
 }
 %end
 
-// هوك لـ ASIdentifierManager لإرجاع الـ IDFA المتجدد عند كل تطهير
+// هوك لـ ASIdentifierManager
 %hook ASIdentifierManager
 - (NSUUID *)advertisingIdentifier {
     if (currentRandomIDFA) {
@@ -439,13 +439,15 @@ static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, N
 }
 %end
 
+// هوك مباشر لـ NSURLSession لتسريع الفحص فوراً
 %hook NSURLSession
 - (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable))completionHandler {
     NSMutableURLRequest *mutableReq = [request mutableCopy];
     
     void (^wrappedHandler)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable) = ^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-        logGodModeEvent(@"NSURLSession", request.HTTPMethod, request.URL.absoluteString, httpResp.statusCode, data, error);
+        if (data) {
+            logGodModeEvent(request.URL.absoluteString, data);
+        }
         if (completionHandler) completionHandler(data, response, error);
     };
     
