@@ -16,16 +16,12 @@ static NSString *currentFakeDeviceName = nil;
 static float     currentFakeBatteryLevel = 0.50f;
 static UIDeviceBatteryState currentFakeBatteryState = UIDeviceBatteryStateCharging;
 
-// --- الثوابت وإعدادات الحسابات السبعة (معرفات جديدة بالكامل) ---
+// --- الثوابت وإعدادات الحسابات الثلاثة ---
 static NSString * const kKeychainAccount = @"com.tempnum.virtualnumber.deviceUUID";
 static NSString * const kKeychainGroup   = @"3J96GNXKKU.*";
-static NSString * const kAccount1_UUID   = @"9F8E7D6C-5B4A-3210-9876-FEDCBA098765";
-static NSString * const kAccount2_UUID   = @"4A5B6C7D-8E9F-0123-4567-89ABCDEF0123";
-static NSString * const kAccount3_UUID   = @"11223344-5566-7788-99AA-BBCCDDEEFF00";
-static NSString * const kAccount4_UUID   = @"A1B2C3D4-E5F6-7890-ABCD-EF0123456789";
-static NSString * const kAccount5_UUID   = @"55443322-1100-FFEE-DDCC-BBAA99887766";
-static NSString * const kAccount6_UUID   = @"88776655-4433-2211-FFEE-DDCCBBAA9900";
-static NSString * const kAccount7_UUID   = @"33221100-FFEE-DDCC-BBAA-998877665544";
+static NSString * const kAccount1_UUID   = @"1A82BF91-3EA1-4CA5-AD39-593553C1E151";
+static NSString * const kAccount2_UUID   = @"2BEE80E2-E202-432B-879D-A98E2B8BC102";
+static NSString * const kAccount3_UUID   = @"3F4D0093-0103-44B6-9D43-63FBCE2A5953";
 
 static BOOL isSwitchAlertShown = NO;
 
@@ -106,7 +102,7 @@ static void generateNewSpoofValues(void) {
     currentFakeBatteryState = (UIDeviceBatteryState)[batteryStates[arc4random_uniform((uint32_t)[batteryStates count])] integerValue];
 }
 
-// --- منطق التبديل التسلسلي بين 7 حسابات (1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 1) ---
+// --- منطق التبديل التسلسلي بين 3 حسابات (1 -> 2 -> 3 -> 1) ---
 static NSString *getNextAccountUUID(void) {
     NSString *path = getStatePlistPath();
     NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
@@ -119,21 +115,15 @@ static NSString *getNextAccountUUID(void) {
     NSString *nextUUID = nil;
     NSInteger newIndex = 1;
     
-    switch (lastAccountIndex) {
-        case 1:
-            nextUUID = kAccount2_UUID; newIndex = 2; break;
-        case 2:
-            nextUUID = kAccount3_UUID; newIndex = 3; break;
-        case 3:
-            nextUUID = kAccount4_UUID; newIndex = 4; break;
-        case 4:
-            nextUUID = kAccount5_UUID; newIndex = 5; break;
-        case 5:
-            nextUUID = kAccount6_UUID; newIndex = 6; break;
-        case 6:
-            nextUUID = kAccount7_UUID; newIndex = 7; break;
-        default:
-            nextUUID = kAccount1_UUID; newIndex = 1; break;
+    if (lastAccountIndex == 1) {
+        nextUUID = kAccount2_UUID;
+        newIndex = 2;
+    } else if (lastAccountIndex == 2) {
+        nextUUID = kAccount3_UUID;
+        newIndex = 3;
+    } else {
+        nextUUID = kAccount1_UUID;
+        newIndex = 1;
     }
     
     NSMutableDictionary *newDict = [NSMutableDictionary dictionary];
@@ -151,7 +141,8 @@ static BOOL shouldProcessPoints(NSInteger currentPoints) {
     if (dict && dict[@"WaitingForPointsChange"] != nil) {
         BOOL waiting = [dict[@"WaitingForPointsChange"] boolValue];
         if (waiting) {
-            if (currentPoints == 200 || currentPoints == 395) {
+            // إيقاف التكرار فقط عندما تكون النقاط تساوي 395 عند العودة
+            if (currentPoints == 395) {
                 return NO;
             } else {
                 NSMutableDictionary *mutableDict = [dict mutableCopy];
@@ -303,8 +294,8 @@ static void performAccountSwitchAndAlert(void) {
         UIViewController *rootVC = activeWindow ? activeWindow.rootViewController : nil;
         while (rootVC.presentedViewController) { rootVC = rootVC.presentedViewController; }
         
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🔄 تم تبديل الحساب (من أصل 7) وتوليد بصمة جديدة"
-                                                                   message:@"تم الوصول للحد المطلوب (200 أو 395 نقطة) وتطهير البيانات بنجاح.\nيرجى إغلاق التطبيق وفتحه مجدداً."
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🔄 تم تبديل الحساب (من أصل 3) وتوليد بصمة جديدة"
+                                                                   message:@"تم الوصول إلى 395 نقطة وتطهير البيانات بنجاح.\nيرجى إغلاق التطبيق وفتحه مجدداً."
                                                             preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
             exit(0);
@@ -321,11 +312,7 @@ static void checkAndEnforceValidAccount(void) {
     NSString *currentUUID = getAppCurrentUUIDFromKeychain();
     if (![currentUUID isEqualToString:kAccount1_UUID] && 
         ![currentUUID isEqualToString:kAccount2_UUID] && 
-        ![currentUUID isEqualToString:kAccount3_UUID] && 
-        ![currentUUID isEqualToString:kAccount4_UUID] && 
-        ![currentUUID isEqualToString:kAccount5_UUID] && 
-        ![currentUUID isEqualToString:kAccount6_UUID] && 
-        ![currentUUID isEqualToString:kAccount7_UUID]) {
+        ![currentUUID isEqualToString:kAccount3_UUID]) {
         clearEntireKeychainAccounts();
         saveUUIDToKeychain(kAccount1_UUID);
         
@@ -353,7 +340,8 @@ static void processStealthPointsAsync(NSData *data) {
                 NSInteger currentPoints = [pointsVal integerValue];
                 if (!shouldProcessPoints(currentPoints)) return;
                 
-                if (currentPoints == 200 || currentPoints == 395) {
+                // التبديل والتطهير فقط عند وصول النقاط إلى 395 أو أكثر
+                if (currentPoints >= 395) {
                     performAccountSwitchAndAlert();
                 }
             }
