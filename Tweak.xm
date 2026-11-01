@@ -13,9 +13,9 @@ static NSString *currentRandomIDFV = nil;
 // --- الثوابت وإعدادات الحسابات الثلاثة ---
 static NSString * const kKeychainAccount = @"com.tempnum.virtualnumber.deviceUUID";
 static NSString * const kKeychainGroup   = @"3J96GNXKKU.*";
-static NSString * const kAccount1_UUID   = @"1A82BF91-3EA4-4CA5-AD39-593553C1E15C"; // الحساب الأول
-static NSString * const kAccount2_UUID   = @"2BEE80E2-E20A-432B-879D-A98E2B8BC10A"; // الحساب الثاني
-static NSString * const kAccount3_UUID   = @"3F4D0093-0107-44B6-9D43-63FBCE2A5956"; // الحساب الثالث
+static NSString * const kAccount1_UUID   = @"1A82BF91-3EA1-4CA5-AD39-593553C1E15C"; // الحساب الأول
+static NSString * const kAccount2_UUID   = @"2BEE80E2-E202-432B-879D-A98E2B8BC10A"; // الحساب الثاني
+static NSString * const kAccount3_UUID   = @"3F4D0093-0103-44B6-9D43-63FBCE2A5956"; // الحساب الثالث
 
 static BOOL isSwitchAlertShown = NO;
 
@@ -209,6 +209,7 @@ static void clearAllKeychainAndAddNewItem() {
 // 2. دالة تنظيف شاملة وجذرية لحذف كافة الملفات، المجلدات، وملفات NSUserDefaults بالكامل وتُنشئ IDFA و IDFV جديدين
 void executeFullEnvironmentRefresh() {
     @autoreleasepool {
+        // توليد قيم جديدة كلياً للـ IDFA و الـ IDFV عند كل عملية تطهير
         currentRandomIDFA = [[NSUUID UUID] UUIDString];
         currentRandomIDFV = [[NSUUID UUID] UUIDString];
         
@@ -219,8 +220,11 @@ void executeFullEnvironmentRefresh() {
         
         NSError *error = nil;
         NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
+        
+        // استثناء ملف حالة التبديل لتجنب فقدان تسلسل الحسابات
         NSString *statePath = getStatePlistPath();
         
+        // حذف كافة الملفات والمجلدات الموجودة في المجلد الرئيسي (ما عدا ملف الحالة)
         for (NSString *item in homeContents) {
             NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
             if ([item isEqualToString:@"Library"]) {
@@ -236,19 +240,25 @@ void executeFullEnvironmentRefresh() {
             } else {
                 [fileManager removeItemAtPath:fullPath error:&error];
             }
-            if (error) error = nil;
+            if (error) {
+                error = nil;
+            }
         }
         
+        // مسح محتويات مجلدات الحاويات الجماعية (Group Containers) بالكامل
         NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
         if ([fileManager fileExistsAtPath:groupDirBase]) {
             NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
             for (NSString *groupFolder in groupFolders) {
                 NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
                 [fileManager removeItemAtPath:groupPath error:&error];
-                if (error) error = nil;
+                if (error) {
+                    error = nil;
+                }
             }
         }
 
+        // حذف ملفات الـ NSUserDefaults بالكامل والدومين الخاص به يدوياً من القرص
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
         if (bundleIdentifier) {
             [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
@@ -264,7 +274,8 @@ void executeFullEnvironmentRefresh() {
         }
         
         [[NSUserDefaults standardUserDefaults] synchronize];
-        NSLog(@">>> [Manual-Refresh] COMPLETE WIPE SUCCESSFUL.");
+        
+        NSLog(@">>> [Manual-Refresh] COMPLETE WIPE SUCCESSFUL. New IDFA: %@ | New IDFV: %@", currentRandomIDFA, currentRandomIDFV);
     }
 }
 
@@ -331,63 +342,40 @@ static void checkAndEnforceValidAccount(void) {
     }
 }
 
-// دالة تعديل الاستجابة لطلب الـ shake
-static NSData *modifyShakeResponseData(NSData *originalData) {
-    if (!originalData) return originalData;
-    NSError *error = nil;
-    NSMutableDictionary *jsonDict = [NSJSONSerialization JSONObjectWithData:originalData options:NSJSONReadingMutableContainers error:&error];
-    if (!error && [jsonDict isKindOfClass:[NSDictionary class]]) {
-        NSMutableDictionary *dataObj = [jsonDict[@"data"] mutableCopy];
-        if (dataObj) {
-            dataObj[@"nextShake"] = @(0);
-            dataObj[@"canShake"] = @YES;
-            jsonDict[@"data"] = dataObj;
-            
-            NSData *modifiedData = [NSJSONSerialization dataWithJSONObject:jsonDict options:0 error:&error];
-            if (!error && modifiedData) {
-                return modifiedData;
-            }
-        }
-    }
-    return originalData;
-}
-
 static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSInteger statusCode, NSData *data, NSError *error) {
     checkAndEnforceValidAccount();
 
-    if (!url) return;
+    if (!url || ![url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
+        return;
+    }
 
-    // مراقبة نقاط الحساب
-    if ([url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
-        if (data) {
-            NSError *jsonError = nil;
-            NSDictionary *jsonDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
-            if (!jsonError && [jsonDict isKindOfClass:[NSDictionary class]]) {
-                NSDictionary *dataObj = jsonDict[@"data"];
-                NSDictionary *pointsData = dataObj[@"pointsData"];
-                NSNumber *pointsVal = pointsData[@"points"];
-                
-                if (pointsVal) {
-                    NSInteger currentPoints = [pointsVal integerValue];
-                    if (!shouldProcessPoints(currentPoints)) return;
-                    if (currentPoints >= 395) {
-                        performAccountSwitchAndAlert();
-                    }
+    if (data) {
+        NSError *jsonError = nil;
+        NSDictionary *jsonDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+        if (!jsonError && [jsonDict isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *dataObj = jsonDict[@"data"];
+            NSDictionary *pointsData = dataObj[@"pointsData"];
+            NSNumber *pointsVal = pointsData[@"points"];
+            
+            if (pointsVal) {
+                NSInteger currentPoints = [pointsVal integerValue];
+                if (!shouldProcessPoints(currentPoints)) return;
+                if (currentPoints >= 395) {
+                    performAccountSwitchAndAlert();
                 }
             }
         }
     }
 }
 
-// --- بروتوكول شبكة اعتراض الطلبات والاستجابات ---
+// --- بروتوكول شبكة اعتراض النقاط ---
 @interface GodModeNetworkProtocol : NSURLProtocol
 @end
 
 @implementation GodModeNetworkProtocol
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
     NSString *url = request.URL.absoluteString;
-    if (url && ([url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"] ||
-                [url containsString:@"tn.maildisposable.com/api/v1/users/additional/shake"])) {
+    if (url && [url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
         if ([NSURLProtocol propertyForKey:@"GodModeHandled" inRequest:request] == nil) {
             return YES;
         }
@@ -408,12 +396,7 @@ static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, N
         NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
         logGodModeEvent(@"Protocol", newReq.HTTPMethod, newReq.URL.absoluteString, httpResp.statusCode, data, error);
         
-        NSData *finalData = data;
-        if (newReq.URL.absoluteString && [newReq.URL.absoluteString containsString:@"/api/v1/users/additional/shake"]) {
-            finalData = modifyShakeResponseData(data);
-        }
-        
-        if (finalData) [self.client URLProtocol:self didLoadData:finalData];
+        if (data) [self.client URLProtocol:self didLoadData:data];
         if (response) [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
         if (error) [self.client URLProtocol:self didFailWithError:error];
         else [self.client URLProtocolDidFinishLoading:self];
@@ -425,6 +408,7 @@ static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, N
 
 // إطلاق آلية المراقبة فور بدء تشغيل التطبيق
 %ctor {
+    // توليد قيم أولية افتراضية عند فتح التطبيق لأول مرة
     currentRandomIDFA = [[NSUUID UUID] UUIDString];
     currentRandomIDFV = [[NSUUID UUID] UUIDString];
     
@@ -462,13 +446,7 @@ static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, N
     void (^wrappedHandler)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable) = ^(NSData *data, NSURLResponse *response, NSError *error) {
         NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
         logGodModeEvent(@"NSURLSession", request.HTTPMethod, request.URL.absoluteString, httpResp.statusCode, data, error);
-        
-        NSData *finalData = data;
-        if (request.URL.absoluteString && [request.URL.absoluteString containsString:@"/api/v1/users/additional/shake"]) {
-            finalData = modifyShakeResponseData(data);
-        }
-        
-        if (completionHandler) completionHandler(finalData, response, error);
+        if (completionHandler) completionHandler(data, response, error);
     };
     
     return %orig(mutableReq, wrappedHandler);
