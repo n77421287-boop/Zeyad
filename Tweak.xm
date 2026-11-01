@@ -28,7 +28,7 @@ static BOOL isPlaying = NO;
 static UIWindow *floatingWindow = nil;
 static NSTimeInterval lastTouchTimestamp = 0;
 
-// دالة مساعدة للحصول على النافذة النشطة بشكل آمن ومتوافق مع أحدث إصدارات iOS
+// دالة مساعدة للحصول على النافذة النشطة بشكل آمن
 UIWindow *getCurrentKeyWindow() {
     for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (scene.activationState == UISceneActivationStateForegroundActive) {
@@ -39,7 +39,6 @@ UIWindow *getCurrentKeyWindow() {
             }
         }
     }
-    // احتياطياً في حال لم يتم العثور عليها عبر الـ Scenes
     for (UIWindow *window in [UIApplication sharedApplication].windows) {
         if (window.isKeyWindow) {
             return window;
@@ -83,26 +82,43 @@ void simulateFakeTouch(CGPoint point) {
         UIView *hitView = [targetWindow hitTest:point withEvent:nil];
 
         UITouch *touch = [[UITouch alloc] init];
-        if ([touch respondsToSelector:@selector(_setWindow:)]) {
-            [touch _setWindow:targetWindow];
-        }
-        if ([touch respondsToSelector:@selector(_setView:)]) {
-            [touch _setView:hitView];
-        }
-        if ([touch respondsToSelector:@selector:_setLocationInWindow:resetPrevious:]) {
-            [touch _setLocationInWindow:point resetPrevious:YES];
-        }
-        if ([touch respondsToSelector:@selector:_setTimestamp:]) {
-            [touch _setTimestamp:[NSProcessInfo processInfo].systemUptime];
-        }
-
-        if ([touch respondsToSelector:@selector(_setPhase:)]) {
-            [touch _setPhase:UITouchPhaseBegan];
+        
+        SEL setWindowSel = NSSelectorFromString(@"_setWindow:");
+        if ([touch respondsToSelector:setWindowSel]) {
+            [touch performSelector:setWindowSel withObject:targetWindow];
         }
         
+        SEL setViewSel = NSSelectorFromString(@"_setView:");
+        if ([touch respondsToSelector:setViewSel]) {
+            [touch performSelector:setViewSel withObject:hitView];
+        }
+        
+        SEL setLocationSel = NSSelectorFromString(@"_setLocationInWindow:resetPrevious:");
+        if ([touch respondsToSelector:setLocationSel]) {
+            NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:[UITouch instanceMethodSignatureForSelector:setLocationSel]];
+            [invocation setTarget:touch];
+            [invocation setSelector:setLocationSel];
+            [invocation setArgument:&point atIndex:2];
+            BOOL reset = YES;
+            [invocation setArgument:&reset atIndex:3];
+            [invocation invoke];
+        }
+        
+        SEL setTimestampSel = NSSelectorFromString(@"_setTimestamp:");
+        if ([touch respondsToSelector:setTimestampSel]) {
+            NSTimeInterval uptime = [NSProcessInfo processInfo].systemUptime;
+            [touch performSelector:setTimestampSel withObject:@(uptime)];
+        }
+
+        SEL setPhaseSel = NSSelectorFromString(@"_setPhase:");
+        if ([touch respondsToSelector:setPhaseSel]) {
+            [touch performSelector:setPhaseSel withObject:@(UITouchPhaseBegan)];
+        }
+        
+        SEL eventWithTouchSel = NSSelectorFromString(@"_eventWithTouch:");
         UIEvent *eventBegan = nil;
-        if ([UIEvent respondsToSelector:@selector(_eventWithTouch:)]) {
-            eventBegan = [UIEvent _eventWithTouch:touch];
+        if ([UIEvent respondsToSelector:eventWithTouchSel]) {
+            eventBegan = [UIEvent performSelector:eventWithTouchSel withObject:touch];
         }
         
         if (eventBegan) {
@@ -111,16 +127,17 @@ void simulateFakeTouch(CGPoint point) {
         }
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if ([touch respondsToSelector:@selector(_setPhase:)]) {
-                [touch _setPhase:UITouchPhaseEnded];
+            if ([touch respondsToSelector:setPhaseSel]) {
+                [touch performSelector:setPhaseSel withObject:@(UITouchPhaseEnded)];
             }
-            if ([touch respondsToSelector:@selector:_setTimestamp:]) {
-                [touch _setTimestamp:[NSProcessInfo processInfo].systemUptime];
+            if ([touch respondsToSelector:setTimestampSel]) {
+                NSTimeInterval uptime = [NSProcessInfo processInfo].systemUptime;
+                [touch performSelector:setTimestampSel withObject:@(uptime)];
             }
             
             UIEvent *eventEnded = nil;
-            if ([UIEvent respondsToSelector:@selector(_eventWithTouch:)]) {
-                eventEnded = [UIEvent _eventWithTouch:touch];
+            if ([UIEvent respondsToSelector:eventWithTouchSel]) {
+                eventEnded = [UIEvent performSelector:eventWithTouchSel withObject:touch];
             }
             
             if (eventEnded) {
