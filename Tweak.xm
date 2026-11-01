@@ -1,467 +1,271 @@
 #import <UIKit/UIKit.h>
-#import <AdSupport/AdSupport.h>
-#import <AppTrackingTransparency/AppTrackingTransparency.h>
-#import <Security/Security.h>
-#import <objc/runtime.h>
 
-extern void executeFullEnvironmentRefresh(void);
+// إعلانات واجهات النظام الداخلية لتوليد لمسات حقيقية
+@interface UIEvent (TouchAllocation)
++ (id)_eventWithTouch:(UITouch *)touch;
+@end
 
-// متغيرات عامة لحفظ الـ IDFA و الـ IDFV المتجددة
-static NSString *currentRandomIDFA = nil;
-static NSString *currentRandomIDFV = nil;
+@interface UITouch (Creation)
+- (void)_setLocationInWindow:(CGPoint)location resetPrevious:(BOOL)reset;
+- (void)_setWindow:(UIWindow *)window;
+- (void)_setView:(UIView *)view;
+- (void)_setPhase:(UITouchPhase)phase;
+- (void)_setTimestamp:(NSTimeInterval)timestamp;
+@end
 
-// --- الثوابت وإعدادات الحسابات الثلاثة ---
-static NSString * const kKeychainAccount = @"com.tempnum.virtualnumber.deviceUUID";
-static NSString * const kKeychainGroup   = @"3J96GNXKKU.*";
-static NSString * const kAccount1_UUID   = @"1A82BF91-3EA1-4CA5-AD39-593553C1E15C"; // الحساب الأول
-static NSString * const kAccount2_UUID   = @"2BEE80E2-E202-432B-879D-A98E2B8BC10A"; // الحساب الثاني
-static NSString * const kAccount3_UUID   = @"3F4D0093-0103-44B6-9D43-63FBCE2A5956"; // الحساب الثالث
+// هيكل بيانات لتخزين النقرات والفارق الزمني
+@interface TouchRecord : NSObject
+@property (nonatomic, assign) CGPoint point;
+@property (nonatomic, assign) NSTimeInterval timeIntervalSinceLast;
+@end
 
-static BOOL isSwitchAlertShown = NO;
+@implementation TouchRecord
+@end
 
-// --- مسار حالة التبديل ---
-static NSString *getStatePlistPath(void) {
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES);
-    NSString *libraryDirectory = [paths firstObject];
-    return [libraryDirectory stringByAppendingPathComponent:@"AccountSwitchState.plist"];
-}
+static NSMutableArray<TouchRecord *> *recordedEvents = nil;
+static BOOL isRecording = NO;
+static BOOL isPlaying = NO;
+static UIWindow *floatingWindow = nil;
+static NSTimeInterval lastTouchTimestamp = 0;
 
-// --- إدارة الـ Keychain المدمجة للحسابات ---
-static NSString *getAppCurrentUUIDFromKeychain(void) {
-    NSDictionary *query = @{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrAccount: kKeychainAccount,
-        (__bridge id)kSecAttrAccessGroup: kKeychainGroup,
-        (__bridge id)kSecReturnData: (__bridge id)kCFBooleanTrue,
-        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne
-    };
-    CFTypeRef result = NULL;
-    if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) == noErr) {
-        NSData *data = (__bridge_transfer NSData *)result;
-        return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    }
-    return nil;
-}
-
-static void clearEntireKeychainAccounts(void) {
-    NSArray *secClasses = @[
-        (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecClassInternetPassword,
-        (__bridge id)kSecClassCertificate,
-        (__bridge id)kSecClassKey,
-        (__bridge id)kSecClassIdentity
-    ];
-    
-    for (id secClass in secClasses) {
-        NSDictionary *spec = @{
-            (__bridge id)kSecClass: secClass,
-            (__bridge id)kSecAttrAccessGroup: kKeychainGroup
-        };
-        SecItemDelete((__bridge CFDictionaryRef)spec);
-    }
-}
-
-static void saveUUIDToKeychain(NSString *uuidString) {
-    NSData *data = [uuidString dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary *addQuery = @{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrAccount: kKeychainAccount,
-        (__bridge id)kSecAttrAccessGroup: kKeychainGroup,
-        (__bridge id)kSecValueData: data
-    };
-    SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-}
-
-// --- منطق التبديل التسلسلي (1 -> 2 -> 3 -> 1) ---
-static NSString *getNextAccountUUID(void) {
-    NSString *path = getStatePlistPath();
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-    
-    NSInteger lastAccountIndex = 1; 
-    if (dict && dict[@"LastIndex"] != nil) {
-        lastAccountIndex = [dict[@"LastIndex"] integerValue];
-    }
-    
-    NSString *nextUUID = nil;
-    NSInteger newIndex = 1;
-    
-    if (lastAccountIndex == 1) {
-        nextUUID = kAccount2_UUID;
-        newIndex = 2;
-    } else if (lastAccountIndex == 2) {
-        nextUUID = kAccount3_UUID;
-        newIndex = 3;
-    } else {
-        nextUUID = kAccount1_UUID;
-        newIndex = 1;
-    }
-    
-    NSMutableDictionary *newDict = [NSMutableDictionary dictionary];
-    newDict[@"LastIndex"] = @(newIndex);
-    newDict[@"WaitingForPointsChange"] = @YES; 
-    [newDict writeToFile:path atomically:YES];
-    
-    return nextUUID;
-}
-
-static BOOL shouldProcessPoints(NSInteger currentPoints) {
-    NSString *path = getStatePlistPath();
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-    
-    if (dict && dict[@"WaitingForPointsChange"] != nil) {
-        BOOL waiting = [dict[@"WaitingForPointsChange"] boolValue];
-        if (waiting) {
-            if (currentPoints == 395) {
-                return NO;
-            } else {
-                NSMutableDictionary *mutableDict = [dict mutableCopy];
-                mutableDict[@"WaitingForPointsChange"] = @NO;
-                [mutableDict writeToFile:path atomically:YES];
-            }
-        }
-    }
-    return YES;
-}
-
-// 1. حذف جميع عناصر الـ Keychain بالكامل ديناميكياً وجذرياً ثم إضافة التوكن الجديد
-static void clearAllKeychainAndAddNewItem() {
-    NSArray *secClasses = @[
-        (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecClassInternetPassword,
-        (__bridge id)kSecClassCertificate,
-        (__bridge id)kSecClassKey,
-        (__bridge id)kSecClassIdentity
-    ];
-    
-    NSString *primaryAccessGroup = @"3J96GNXKKU.*";
-    
-    for (id secClass in secClasses) {
-        NSDictionary *generalQuery = @{
-            (__bridge id)kSecClass: secClass
-        };
-        SecItemDelete((__bridge CFDictionaryRef)generalQuery);
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            NSDictionary *groupQuery = @{
-                (__bridge id)kSecClass: secClass,
-                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
-            };
-            SecItemDelete((__bridge CFDictionaryRef)groupQuery);
-        }
-        
-        NSMutableDictionary *spec = [NSMutableDictionary dictionaryWithDictionary:@{
-            (__bridge id)kSecClass: secClass,
-            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
-            (__bridge id)kSecReturnPersistentRef: @YES
-        }];
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-        }
-        
-        CFArrayRef result = NULL;
-        if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
-            NSArray *items = (__bridge NSArray *)result;
-            for (id itemRef in items) {
-                NSDictionary *refQuery = @{
-                    (__bridge id)kSecValueRef: itemRef
-                };
-                SecItemDelete((__bridge CFDictionaryRef)refQuery);
-            }
-            CFRelease(result);
-        }
-    }
-    
-    NSString *serviceName = @"app.getsmscode";
-    NSString *accountName = @"tokenKey";
-    NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
-    
-    NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
-    
-    NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: serviceName,
-        (__bridge id)kSecAttrAccount: accountName,
-        (__bridge id)kSecValueData: tokenData
-    }];
-    
-    if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-        addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-    }
-    
-    SecItemDelete((__bridge CFDictionaryRef)addQuery);
-    OSStatus addStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-    
-    if (addStatus == errSecSuccess) {
-        NSLog(@">>> [Dynamic-Refresh] Keychain completely wiped with group 3J96GNXKKU.* & tokenKey added.");
-    } else {
-        [addQuery removeObjectForKey:(__bridge id)kSecAttrAccessGroup];
-        SecItemDelete((__bridge CFDictionaryRef)addQuery);
-        OSStatus fallbackStatus = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-        if (fallbackStatus == errSecSuccess) {
-            NSLog(@">>> [Dynamic-Refresh] Keychain wiped & tokenKey added via fallback mode.");
-        } else {
-            NSLog(@">>> [Dynamic-Refresh] Failed to add tokenKey, error code: %d", (int)fallbackStatus);
-        }
-    }
-}
-
-// 2. دالة تنظيف شاملة وجذرية لحذف كافة الملفات، المجلدات، وملفات NSUserDefaults بالكامل وتُنشئ IDFA و IDFV جديدين
-void executeFullEnvironmentRefresh() {
-    @autoreleasepool {
-        // توليد قيم جديدة كلياً للـ IDFA و الـ IDFV عند كل عملية تطهير
-        currentRandomIDFA = [[NSUUID UUID] UUIDString];
-        currentRandomIDFV = [[NSUUID UUID] UUIDString];
-        
-        clearAllKeychainAndAddNewItem();
-
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSString *homeDir = NSHomeDirectory();
-        
-        NSError *error = nil;
-        NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
-        
-        // استثناء ملف حالة التبديل لتجنب فقدان تسلسل الحسابات
-        NSString *statePath = getStatePlistPath();
-        
-        // حذف كافة الملفات والمجلدات الموجودة في المجلد الرئيسي (ما عدا ملف الحالة)
-        for (NSString *item in homeContents) {
-            NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
-            if ([item isEqualToString:@"Library"]) {
-                NSString *libraryDir = [homeDir stringByAppendingPathComponent:@"Library"];
-                NSArray *libraryContents = [fileManager contentsOfDirectoryAtPath:libraryDir error:&error];
-                for (NSString *libItem in libraryContents) {
-                    NSString *libItemPath = [libraryDir stringByAppendingPathComponent:libItem];
-                    if ([libItemPath isEqualToString:statePath]) {
-                        continue;
-                    }
-                    [fileManager removeItemAtPath:libItemPath error:&error];
-                }
-            } else {
-                [fileManager removeItemAtPath:fullPath error:&error];
-            }
-            if (error) {
-                error = nil;
-            }
-        }
-        
-        // مسح محتويات مجلدات الحاويات الجماعية (Group Containers) بالكامل
-        NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
-        if ([fileManager fileExistsAtPath:groupDirBase]) {
-            NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
-            for (NSString *groupFolder in groupFolders) {
-                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
-                [fileManager removeItemAtPath:groupPath error:&error];
-                if (error) {
-                    error = nil;
-                }
-            }
-        }
-
-        // حذف ملفات الـ NSUserDefaults بالكامل والدومين الخاص به يدوياً من القرص
-        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-        if (bundleIdentifier) {
-            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-            
-            NSString *libraryPrefsPath = [homeDir stringByAppendingPathComponent:@"Library/Preferences"];
-            NSArray *prefFiles = [fileManager contentsOfDirectoryAtPath:libraryPrefsPath error:nil];
-            for (NSString *file in prefFiles) {
-                if ([file containsString:bundleIdentifier] || [file hasSuffix:@".plist"]) {
-                    NSString *filePath = [libraryPrefsPath stringByAppendingPathComponent:file];
-                    [fileManager removeItemAtPath:filePath error:nil];
-                }
-            }
-        }
-        
-        [[NSUserDefaults standardUserDefaults] synchronize];
-        
-        NSLog(@">>> [Manual-Refresh] COMPLETE WIPE SUCCESSFUL. New IDFA: %@ | New IDFV: %@", currentRandomIDFA, currentRandomIDFV);
-    }
-}
-
-// --- تنفيذ التبديل والتنبيه التلقائي عند الوصول لـ 395 نقطة ---
-static void performAccountSwitchAndAlert(void) {
-    if (isSwitchAlertShown) return;
-    isSwitchAlertShown = YES;
-    
-    NSString *nextUUID = getNextAccountUUID();
-    executeFullEnvironmentRefresh();
-    clearEntireKeychainAccounts();
-    saveUUIDToKeychain(nextUUID);
-    
+// دالة لرسم دائرة حمراء مؤقتة في مكان الضغطة على الشاشة
+void showTouchIndicatorAtPoint(CGPoint point) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *activeWindow = nil;
-        if (@available(iOS 13.0, *)) {
-            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-                    UIWindowScene *windowScene = (UIWindowScene *)scene;
-                    for (UIWindow *w in windowScene.windows) {
-                        if (w.isKeyWindow) {
-                            activeWindow = w;
-                            break;
-                        }
-                    }
-                }
+        UIWindow *targetWindow = nil;
+        for (UIWindow *window in [UIApplication sharedApplication].windows) {
+            if (window.isKeyWindow) {
+                targetWindow = window;
+                break;
             }
         }
+        if (!targetWindow) targetWindow = [UIApplication sharedApplication].keyWindow;
+        if (!targetWindow) return;
+
+        UIView *indicator = [[UIView alloc] initWithFrame:CGRectMake(point.x - 15, point.y - 15, 30, 30)];
+        indicator.backgroundColor = [[UIColor redColor] colorWithAlphaComponent:0.7];
+        indicator.layer.cornerRadius = 15;
+        indicator.layer.borderWidth = 1.5;
+        indicator.layer.borderColor = [UIColor whiteColor].CGColor;
+        indicator.userInteractionEnabled = NO;
         
-        UIViewController *rootVC = activeWindow ? activeWindow.rootViewController : nil;
-        while (rootVC.presentedViewController) {
-            rootVC = rootVC.presentedViewController;
+        [targetWindow addSubview:indicator];
+
+        [UIView animateWithDuration:0.3 animations:^{
+            indicator.transform = CGAffineTransformMakeScale(1.4, 1.4);
+            indicator.alpha = 0.0;
+        } completion:^(BOOL finished) {
+            [indicator removeFromSuperview];
+        }];
+    });
+}
+
+// دالة محاكاة الضغطة الحقيقية مع إظهار المؤشر الأحمر
+void simulateFakeTouch(CGPoint point) {
+    showTouchIndicatorAtPoint(point);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *targetWindow = nil;
+        for (UIWindow *window in [UIApplication sharedApplication].windows) {
+            if (window.isKeyWindow) {
+                targetWindow = window;
+                break;
+            }
+        }
+        if (!targetWindow) targetWindow = [UIApplication sharedApplication].keyWindow;
+        if (!targetWindow) return;
+
+        UIView *hitView = [targetWindow hitTest:point withEvent:nil];
+
+        UITouch *touch = [[UITouch alloc] init];
+        if ([touch respondsToSelector:@selector(_setWindow:)]) {
+            [touch _setWindow:targetWindow];
+        }
+        if ([touch respondsToSelector:@selector(_setView:)]) {
+            [touch _setView:hitView];
+        }
+        if ([touch respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)]) {
+            [touch _setLocationInWindow:point resetPrevious:YES];
+        }
+        if ([touch respondsToSelector:@selector(_setTimestamp:)]) {
+            [touch _setTimestamp:[NSProcessInfo processInfo].systemUptime];
+        }
+
+        if ([touch respondsToSelector:@selector:_setPhase:]) {
+            [touch _setPhase:UITouchPhaseBegan];
         }
         
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🔄 تم تبديل الحساب تلقائياً"
-                                                                   message:@"تم الوصول إلى 395 نقطة وحذف البيانات.\nتم الانتقال للحساب التالي بنجاح.\n\nيرجى إغلاق التطبيق من الخلفية وفتحه مجدداً."
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-        
-        [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            exit(0);
-        }]];
-        
-        if (rootVC) {
-            [rootVC presentViewController:alert animated:YES completion:nil];
+        UIEvent *eventBegan = nil;
+        if ([UIEvent respondsToSelector:@selector(_eventWithTouch:)]) {
+            eventBegan = [UIEvent _eventWithTouch:touch];
         }
         
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            exit(0);
+        if (eventBegan) {
+            [[UIApplication sharedApplication] sendEvent:eventBegan];
+            [targetWindow sendEvent:eventBegan];
+        }
+
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if ([touch respondsToSelector:@selector:_setPhase:]) {
+                [touch _setPhase:UITouchPhaseEnded];
+            }
+            if ([touch respondsToSelector:@selector:_setTimestamp:]) {
+                [touch _setTimestamp:[NSProcessInfo processInfo].systemUptime];
+            }
+            
+            UIEvent *eventEnded = nil;
+            if ([UIEvent respondsToSelector:@selector:_eventWithTouch:)]) {
+                eventEnded = [UIEvent _eventWithTouch:touch];
+            }
+            
+            if (eventEnded) {
+                [[UIApplication sharedApplication] sendEvent:eventEnded];
+                [targetWindow sendEvent:eventEnded];
+            }
         });
     });
 }
 
-static void checkAndEnforceValidAccount(void) {
-    NSString *currentUUID = getAppCurrentUUIDFromKeychain();
-    if (![currentUUID isEqualToString:kAccount1_UUID] && 
-        ![currentUUID isEqualToString:kAccount2_UUID] && 
-        ![currentUUID isEqualToString:kAccount3_UUID]) {
-        clearEntireKeychainAccounts();
-        saveUUIDToKeychain(kAccount1_UUID);
-        
-        NSString *path = getStatePlistPath();
-        NSDictionary *dict = @{ @"LastIndex": @(1), @"WaitingForPointsChange": @NO };
-        [dict writeToFile:path atomically:YES];
-    }
-}
-
-static void logGodModeEvent(NSString *engine, NSString *method, NSString *url, NSInteger statusCode, NSData *data, NSError *error) {
-    checkAndEnforceValidAccount();
-
-    if (!url || ![url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
-        return;
-    }
-
-    if (data) {
-        NSError *jsonError = nil;
-        NSDictionary *jsonDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
-        if (!jsonError && [jsonDict isKindOfClass:[NSDictionary class]]) {
-            NSDictionary *dataObj = jsonDict[@"data"];
-            NSDictionary *pointsData = dataObj[@"pointsData"];
-            NSNumber *pointsVal = pointsData[@"points"];
+void replayRecordedTouches() {
+    if (!recordedEvents || recordedEvents.count == 0 || isPlaying) return;
+    isPlaying = YES;
+    
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        for (TouchRecord *record in recordedEvents) {
+            if (!isPlaying) break;
             
-            if (pointsVal) {
-                NSInteger currentPoints = [pointsVal integerValue];
-                if (!shouldProcessPoints(currentPoints)) return;
-                if (currentPoints >= 395) {
-                    performAccountSwitchAndAlert();
-                }
+            if (record.timeIntervalSinceLast > 0) {
+                useconds_t delayMicroseconds = (useconds_t)(record.timeIntervalSinceLast * 1000000.0);
+                if (delayMicroseconds > 5000000) delayMicroseconds = 5000000;
+                usleep(delayMicroseconds);
             }
+            
+            if (!isPlaying) break;
+            simulateFakeTouch(record.point);
         }
-    }
-}
-
-// --- بروتوكول شبكة اعتراض النقاط ---
-@interface GodModeNetworkProtocol : NSURLProtocol
-@end
-
-@implementation GodModeNetworkProtocol
-+ (BOOL)canInitWithRequest:(NSURLRequest *)request {
-    NSString *url = request.URL.absoluteString;
-    if (url && [url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
-        if ([NSURLProtocol propertyForKey:@"GodModeHandled" inRequest:request] == nil) {
-            return YES;
-        }
-    }
-    return NO;
-}
-+ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
-    NSMutableURLRequest *mutableReq = [request mutableCopy];
-    [NSURLProtocol setProperty:@YES forKey:@"GodModeHandled" inRequest:mutableReq];
-    return mutableReq;
-}
-- (void)startLoading {
-    NSMutableURLRequest *newReq = [self.request mutableCopy];
-    [NSURLProtocol setProperty:@YES forKey:@"GodModeHandled" inRequest:newReq];
-    
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
-    NSURLSessionDataTask *task = [session dataTaskWithRequest:newReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-        logGodModeEvent(@"Protocol", newReq.HTTPMethod, newReq.URL.absoluteString, httpResp.statusCode, data, error);
-        
-        if (data) [self.client URLProtocol:self didLoadData:data];
-        if (response) [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
-        if (error) [self.client URLProtocol:self didFailWithError:error];
-        else [self.client URLProtocolDidFinishLoading:self];
-    }];
-    [task resume];
-}
-- (void)stopLoading {}
-@end
-
-// إطلاق آلية المراقبة فور بدء تشغيل التطبيق
-%ctor {
-    // توليد قيم أولية افتراضية عند فتح التطبيق لأول مرة
-    currentRandomIDFA = [[NSUUID UUID] UUIDString];
-    currentRandomIDFV = [[NSUUID UUID] UUIDString];
-    
-    checkAndEnforceValidAccount();
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [NSURLProtocol registerClass:[GodModeNetworkProtocol class]];
+        isPlaying = NO;
     });
 }
 
-// هوك لـ UIDevice لإرجاع الـ IDFV المتجدد عند كل تطهير
-%hook UIDevice
-- (NSUUID *)identifierForVendor {
-    if (currentRandomIDFV) {
-        return [[NSUUID alloc] initWithUUIDString:currentRandomIDFV];
-    }
-    return %orig;
-}
-%end
+@interface FloatingController : UIViewController
+@end
 
-// هوك لـ ASIdentifierManager لإرجاع الـ IDFA المتجدد عند كل تطهير
-%hook ASIdentifierManager
-- (NSUUID *)advertisingIdentifier {
-    if (currentRandomIDFA) {
-        return [[NSUUID alloc] initWithUUIDString:currentRandomIDFA];
-    }
-    return %orig;
+@implementation FloatingController {
+    UIButton *recordButton;
+    UIButton *playButton;
 }
-%end
 
-%hook NSURLSession
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable))completionHandler {
-    NSMutableURLRequest *mutableReq = [request mutableCopy];
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.9];
+    self.view.layer.cornerRadius = 14;
+    self.view.layer.borderWidth = 1.0;
+    self.view.layer.borderColor = [UIColor whiteColor].CGColor;
     
-    void (^wrappedHandler)(NSData * _Nullable, NSURLResponse * _Nullable, NSError * _Nullable) = ^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSHTTPURLResponse *httpResp = (NSHTTPURLResponse *)response;
-        logGodModeEvent(@"NSURLSession", request.HTTPMethod, request.URL.absoluteString, httpResp.statusCode, data, error);
-        if (completionHandler) completionHandler(data, response, error);
-    };
+    recordButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [recordButton setTitle:@"بدء التسجيل" forState:UIControlStateNormal];
+    [recordButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    recordButton.frame = CGRectMake(10, 10, 130, 40);
+    recordButton.backgroundColor = [UIColor systemRedColor];
+    recordButton.layer.cornerRadius = 8;
+    [recordButton addTarget:self action:@selector(toggleRecord) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:recordButton];
     
-    return %orig(mutableReq, wrappedHandler);
+    playButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [playButton setTitle:@"تشغيل التكرار" forState:UIControlStateNormal];
+    [playButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    playButton.frame = CGRectMake(150, 10, 130, 40);
+    playButton.backgroundColor = [UIColor systemGreenColor];
+    playButton.layer.cornerRadius = 8;
+    [playButton addTarget:self action:@selector(togglePlay) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:playButton];
+    
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
+    [self.view addGestureRecognizer:pan];
 }
-%end
 
-%hook NSURLSessionConfiguration
-+ (NSURLSessionConfiguration *)defaultSessionConfiguration {
-    NSURLSessionConfiguration *config = %orig;
-    NSMutableArray *protocols = [config.protocolClasses mutableCopy];
-    if (!protocols) protocols = [NSMutableArray array];
-    if (![protocols containsObject:[GodModeNetworkProtocol class]]) {
-        [protocols insertObject:[GodModeNetworkProtocol class] atIndex:0];
-        config.protocolClasses = protocols;
+- (void)toggleRecord {
+    isRecording = !isRecording;
+    if (isRecording) {
+        if (!recordedEvents) recordedEvents = [[NSMutableArray alloc] init];
+        [recordedEvents removeAllObjects];
+        lastTouchTimestamp = 0;
+        [recordButton setTitle:@"إيقاف التسجيل" forState:UIControlStateNormal];
+        recordButton.backgroundColor = [UIColor systemOrangeColor];
+    } else {
+        [recordButton setTitle:@"بدء التسجيل" forState:UIControlStateNormal];
+        recordButton.backgroundColor = [UIColor systemRedColor];
     }
-    return config;
 }
+
+- (void)togglePlay {
+    if (isPlaying) {
+        isPlaying = NO;
+        [playButton setTitle:@"تشغيل التكرار" forState:UIControlStateNormal];
+    } else {
+        [playButton setTitle:@"إيقاف التشغيل" forState:UIControlStateNormal];
+        replayRecordedTouches();
+    }
+}
+
+- (void)handlePan:(UIPanGestureRecognizer *)gesture {
+    CGPoint translation = [gesture translationInView:self.view.superview];
+    CGPoint center = self.view.center;
+    self.view.center = CGPointMake(center.x + translation.x, center.y + translation.y);
+    [gesture setTranslation:CGPointZero inView:self.view.superview];
+}
+
+@end
+
+%hook UIApplication
+
+- (void)sendEvent:(UIEvent *)event {
+    if (event.type == UIEventTypeTouches) {
+        NSSet *touches = [event allTouches];
+        UITouch *touch = [touches anyObject];
+        
+        if (isRecording && touch.phase == UITouchPhaseBegan) {
+            CGPoint location = [touch locationInView:touch.window];
+            
+            if (touch.window != floatingWindow) {
+                showTouchIndicatorAtPoint(location);
+
+                NSTimeInterval currentTime = [NSProcessInfo processInfo].systemUptime;
+                NSTimeInterval interval = 0;
+                
+                if (lastTouchTimestamp > 0) {
+                    interval = currentTime - lastTouchTimestamp;
+                }
+                lastTouchTimestamp = currentTime;
+                
+                TouchRecord *record = [[TouchRecord alloc] init];
+                record.point = location;
+                record.timeIntervalSinceLast = interval;
+                
+                if (!recordedEvents) recordedEvents = [[NSMutableArray alloc] init];
+                [recordedEvents addObject:record];
+            }
+        }
+    }
+    %orig(event);
+}
+
+- (void)setDelegate:(id)delegate {
+    %orig;
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!floatingWindow) {
+            UIWindowScene *scene = [[[UIApplication sharedApplication] connectedScenes] allObjects].firstObject;
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                floatingWindow = [[UIWindow alloc] initWithWindowScene:scene];
+            } else {
+                floatingWindow = [[UIWindow alloc] initWithFrame:CGRectMake(50, 100, 290, 60)];
+            }
+            floatingWindow.frame = CGRectMake(50, 100, 290, 60);
+            floatingWindow.windowLevel = UIWindowLevelAlert + 100;
+            floatingWindow.rootViewController = [[FloatingController alloc] init];
+            [floatingWindow setHidden:NO];
+        }
+    });
+}
+
 %end
