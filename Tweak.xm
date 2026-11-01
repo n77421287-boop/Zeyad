@@ -83,42 +83,41 @@ void simulateFakeTouch(CGPoint point) {
 
         UITouch *touch = [[UITouch alloc] init];
         
-        SEL setWindowSel = NSSelectorFromString(@"_setWindow:");
-        if ([touch respondsToSelector:setWindowSel]) {
-            [touch performSelector:setWindowSel withObject:targetWindow];
+        // تعطيل تحذيرات ARC مؤقتًا للتعامل مع الـ Private APIs بأمان تام
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wundeclared-selector"
+        
+        if ([touch respondsToSelector:@selector(_setWindow:)]) {
+            [touch performSelector:@selector(_setWindow:) withObject:targetWindow];
         }
         
-        SEL setViewSel = NSSelectorFromString(@"_setView:");
-        if ([touch respondsToSelector:setViewSel]) {
-            [touch performSelector:setViewSel withObject:hitView];
+        if ([touch respondsToSelector:@selector(_setView:)]) {
+            [touch performSelector:@selector(_setView:) withObject:hitView];
         }
         
-        SEL setLocationSel = NSSelectorFromString(@"_setLocationInWindow:resetPrevious:");
-        if ([touch respondsToSelector:setLocationSel]) {
-            NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:[UITouch instanceMethodSignatureForSelector:setLocationSel]];
+        if ([touch respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)]) {
+            NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:[UITouch instanceMethodSignatureForSelector:@selector(_setLocationInWindow:resetPrevious:)]];
             [invocation setTarget:touch];
-            [invocation setSelector:setLocationSel];
-            [invocation setArgument:&point atIndex:2];
+            [invocation setSelector:@selector(_setLocationInWindow:resetPrevious:)];
+            CGPoint mutablePoint = point;
+            [invocation setArgument:&mutablePoint atIndex:2];
             BOOL reset = YES;
             [invocation setArgument:&reset atIndex:3];
             [invocation invoke];
         }
         
-        SEL setTimestampSel = NSSelectorFromString(@"_setTimestamp:");
-        if ([touch respondsToSelector:setTimestampSel]) {
-            NSTimeInterval uptime = [NSProcessInfo processInfo].systemUptime;
-            [touch performSelector:setTimestampSel withObject:@(uptime)];
+        NSTimeInterval uptime = [NSProcessInfo processInfo].systemUptime;
+        if ([touch respondsToSelector:@selector(_setTimestamp:)]) {
+            [touch performSelector:@selector(_setTimestamp:) withObject:@(uptime)];
         }
 
-        SEL setPhaseSel = NSSelectorFromString(@"_setPhase:");
-        if ([touch respondsToSelector:setPhaseSel]) {
-            [touch performSelector:setPhaseSel withObject:@(UITouchPhaseBegan)];
+        if ([touch respondsToSelector:@selector(_setPhase:)]) {
+            [touch performSelector:@selector(_setPhase:) withObject:@(UITouchPhaseBegan)];
         }
         
-        SEL eventWithTouchSel = NSSelectorFromString(@"_eventWithTouch:");
         UIEvent *eventBegan = nil;
-        if ([UIEvent respondsToSelector:eventWithTouchSel]) {
-            eventBegan = [UIEvent performSelector:eventWithTouchSel withObject:touch];
+        if ([UIEvent respondsToSelector:@selector(_eventWithTouch:)]) {
+            eventBegan = [UIEvent performSelector:@selector(_eventWithTouch:) withObject:touch];
         }
         
         if (eventBegan) {
@@ -127,17 +126,17 @@ void simulateFakeTouch(CGPoint point) {
         }
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if ([touch respondsToSelector:setPhaseSel]) {
-                [touch performSelector:setPhaseSel withObject:@(UITouchPhaseEnded)];
+            if ([touch respondsToSelector:@selector(_setPhase:)]) {
+                [touch performSelector:@selector(_setPhase:) withObject:@(UITouchPhaseEnded)];
             }
-            if ([touch respondsToSelector:setTimestampSel]) {
-                NSTimeInterval uptime = [NSProcessInfo processInfo].systemUptime;
-                [touch performSelector:setTimestampSel withObject:@(uptime)];
+            NSTimeInterval endUptime = [NSProcessInfo processInfo].systemUptime;
+            if ([touch respondsToSelector:@selector(_setTimestamp:)]) {
+                [touch performSelector:@selector(_setTimestamp:) withObject:@(endUptime)];
             }
             
             UIEvent *eventEnded = nil;
-            if ([UIEvent respondsToSelector:eventWithTouchSel]) {
-                eventEnded = [UIEvent performSelector:eventWithTouchSel withObject:touch];
+            if ([UIEvent respondsToSelector:@selector(_eventWithTouch:)]) {
+                eventEnded = [UIEvent performSelector:@selector(_eventWithTouch:) withObject:touch];
             }
             
             if (eventEnded) {
@@ -145,6 +144,8 @@ void simulateFakeTouch(CGPoint point) {
                 [targetWindow sendEvent:eventEnded];
             }
         });
+
+#pragma clang diagnostic pop
     });
 }
 
