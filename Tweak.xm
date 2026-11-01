@@ -28,17 +28,30 @@ static BOOL isPlaying = NO;
 static UIWindow *floatingWindow = nil;
 static NSTimeInterval lastTouchTimestamp = 0;
 
+// دالة مساعدة للحصول على النافذة النشطة بشكل آمن ومتوافق مع أحدث إصدارات iOS
+UIWindow *getCurrentKeyWindow() {
+    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (scene.activationState == UISceneActivationStateForegroundActive) {
+            for (UIWindow *window in scene.windows) {
+                if (window.isKeyWindow) {
+                    return window;
+                }
+            }
+        }
+    }
+    // احتياطياً في حال لم يتم العثور عليها عبر الـ Scenes
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        if (window.isKeyWindow) {
+            return window;
+        }
+    }
+    return [UIApplication sharedApplication].windows.firstObject;
+}
+
 // دالة لرسم دائرة حمراء مؤقتة في مكان الضغطة على الشاشة
 void showTouchIndicatorAtPoint(CGPoint point) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *targetWindow = nil;
-        for (UIWindow *window in [UIApplication sharedApplication].windows) {
-            if (window.isKeyWindow) {
-                targetWindow = window;
-                break;
-            }
-        }
-        if (!targetWindow) targetWindow = [UIApplication sharedApplication].keyWindow;
+        UIWindow *targetWindow = getCurrentKeyWindow();
         if (!targetWindow) return;
 
         UIView *indicator = [[UIView alloc] initWithFrame:CGRectMake(point.x - 15, point.y - 15, 30, 30)];
@@ -64,14 +77,7 @@ void simulateFakeTouch(CGPoint point) {
     showTouchIndicatorAtPoint(point);
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *targetWindow = nil;
-        for (UIWindow *window in [UIApplication sharedApplication].windows) {
-            if (window.isKeyWindow) {
-                targetWindow = window;
-                break;
-            }
-        }
-        if (!targetWindow) targetWindow = [UIApplication sharedApplication].keyWindow;
+        UIWindow *targetWindow = getCurrentKeyWindow();
         if (!targetWindow) return;
 
         UIView *hitView = [targetWindow hitTest:point withEvent:nil];
@@ -83,14 +89,14 @@ void simulateFakeTouch(CGPoint point) {
         if ([touch respondsToSelector:@selector(_setView:)]) {
             [touch _setView:hitView];
         }
-        if ([touch respondsToSelector:@selector(_setLocationInWindow:resetPrevious:)]) {
+        if ([touch respondsToSelector:@selector:_setLocationInWindow:resetPrevious:]) {
             [touch _setLocationInWindow:point resetPrevious:YES];
         }
-        if ([touch respondsToSelector:@selector(_setTimestamp:)]) {
+        if ([touch respondsToSelector:@selector:_setTimestamp:]) {
             [touch _setTimestamp:[NSProcessInfo processInfo].systemUptime];
         }
 
-        if ([touch respondsToSelector:@selector:_setPhase:]) {
+        if ([touch respondsToSelector:@selector(_setPhase:)]) {
             [touch _setPhase:UITouchPhaseBegan];
         }
         
@@ -105,7 +111,7 @@ void simulateFakeTouch(CGPoint point) {
         }
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if ([touch respondsToSelector:@selector:_setPhase:]) {
+            if ([touch respondsToSelector:@selector(_setPhase:)]) {
                 [touch _setPhase:UITouchPhaseEnded];
             }
             if ([touch respondsToSelector:@selector:_setTimestamp:]) {
@@ -113,7 +119,7 @@ void simulateFakeTouch(CGPoint point) {
             }
             
             UIEvent *eventEnded = nil;
-            if ([UIEvent respondsToSelector:@selector:_eventWithTouch:)]) {
+            if ([UIEvent respondsToSelector:@selector(_eventWithTouch:)]) {
                 eventEnded = [UIEvent _eventWithTouch:touch];
             }
             
@@ -254,9 +260,16 @@ void replayRecordedTouches() {
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (!floatingWindow) {
-            UIWindowScene *scene = [[[UIApplication sharedApplication] connectedScenes] allObjects].firstObject;
-            if ([scene isKindOfClass:[UIWindowScene class]]) {
-                floatingWindow = [[UIWindow alloc] initWithWindowScene:scene];
+            UIWindowScene *targetScene = nil;
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]]) {
+                    targetScene = (UIWindowScene *)scene;
+                    break;
+                }
+            }
+            
+            if (targetScene) {
+                floatingWindow = [[UIWindow alloc] initWithWindowScene:targetScene];
             } else {
                 floatingWindow = [[UIWindow alloc] initWithFrame:CGRectMake(50, 100, 290, 60)];
             }
