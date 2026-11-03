@@ -1,4 +1,4 @@
-//  SimpleWebViewSniffer.m — Direct Element Name Sniffer
+//  SimpleWebViewSniffer.m — Direct Element Name Sniffer (Fixed)
 // ============================================================================
 
 #import <Foundation/Foundation.h>
@@ -33,6 +33,39 @@ static void sniffer_add_log(NSString *logText) {
             g_overlayText.text = [g_sniffedLogs componentsJoinedByString:@"\n----------------------------------------\n"];
         }
     });
+}
+
+// طريقة آمنة لجلب النافذة النشطة بدون أخطاء تحذيرات المترجم
+static UIWindow *sniffer_key_window(void) {
+    UIWindow *keyWindow = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            if (scene.activationState != UISceneActivationStateForegroundActive) continue;
+            UIWindowScene *ws = (UIWindowScene *)scene;
+            for (UIWindow *w in ws.windows) {
+                if (w.isKeyWindow) { keyWindow = w; break; }
+            }
+            if (keyWindow) break;
+        }
+    }
+    
+    if (!keyWindow) {
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        keyWindow = [UIApplication sharedApplication].keyWindow;
+        #pragma clang diagnostic pop
+    }
+    
+    if (!keyWindow) {
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow) { keyWindow = w; break; }
+        }
+        #pragma clang diagnostic pop
+    }
+    return keyWindow;
 }
 
 // السكربت الذي سيراقب الـ Click ويعطينا الاسم بوضوح تام
@@ -85,7 +118,6 @@ static NSString *const kSimpleJSSnippet = @"(function() {"
         NSString *fullLog = [NSString stringWithFormat:@"%@\n📍 XPath: %@\n💻 كود الضغط التلقائي:\n[webView evaluateJavaScript:@\"document.evaluate('%@', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click();\" completionHandler:nil];", textInfo, xpath, xpath];
         
         sniffer_add_log(fullLog);
-        // طباعة أيضاً في الكونصول للتأكد
         NSLog(@"%@", fullLog);
     }
 }
@@ -131,15 +163,7 @@ __attribute__((constructor))
 static void SimpleBootstrap(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         @try {
-            UIWindow *keyWindow = nil;
-            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if ([scene isKindOfClass:[UIWindowScene class]]) {
-                    for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                        if (w.isKeyWindow) { keyWindow = w; break; }
-                    }
-                }
-            }
-            if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+            UIWindow *keyWindow = sniffer_key_window();
             if (!keyWindow) return;
 
             g_overlay = [[UIView alloc] initWithFrame:CGRectMake(10, 40, keyWindow.bounds.size.width - 20, 260)];
