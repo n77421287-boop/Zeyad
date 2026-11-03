@@ -73,43 +73,6 @@ static NSString *const kSimpleJSSnippet = @"(function() {"
 @"    var elemText = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();"
 @"    if (elemText.length > 30) elemText = elemText.substring(0, 30) + '...';"
 @""
-@"    // بناء XPath دقيق للزر الضغوط"
-@"    function getXPath(node) {"
-@"        if (node.id) return '//*[@id=\"' + node.id + '\"]';"
-@"        if (node === document.body) return node.tagName;"
-@"        var ix = 0;"
-@"        var siblings = node.parentNode ? node.parentNode.childNodes : [];"
-@"        for (var i = 0; i < siblings.length; i++) {"
-@"            var sibling = siblings[i];"
-@"            if (sibling === node) {"
-@"                return getXPath(node.parentNode) + '/' + node.tagName.toLowerCase() + '[' + (ix + 1) + ']';"
-@"            }"
-@"            if (sibling.nodeType === 1 && sibling.tagName === node.tagName) ix++;"
-@"        }"
-@"        return '';"
-@"    }"
-@""
-@"    var xpath = getXPath(el);"
-@"    var info = '🎯 تم ضغط: <' + tagName + '> | النص: [' + elemText + '] | ' + elemId + ' ' + elemClass;"
-@""
-@"    // إرسال البيانات للتطبيق الأصلي"
-@"    window.webkit.messageHandlers.SimpleSnifferHandler.postMessage({text: info, xpath: xpath});"
-@"}, true);"
-@кновеرت();"; // تم تصحيح القوس الداخلي أدناه بنجاح
-
-// استبدال النص السابق بالنسخ الصحيحة أدناه للـ JS snippet لتفادي أي خطأ
-static NSString *const kFixedSimpleJSSnippet = @"(function() {"
-@"if (window.__simpleSnifferInjected) return;"
-@"window.__simpleSnifferInjected = true;"
-@""
-@"document.addEventListener('click', function(e) {"
-@"    var el = e.target;"
-@"    var tagName = el.tagName || 'UNKNOWN';"
-@"    var elemId = el.id ? 'id=\"' + el.id + '\"' : '';"
-@"    var elemClass = el.className ? 'class=\"' + el.className + '\"' : '';"
-@"    var elemText = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();"
-@"    if (elemText.length > 30) elemText = elemText.substring(0, 30) + '...';"
-@""
 @"    function getXPath(node) {"
 @"        if (node.id) return '//*[@id=\"' + node.id + '\"]';"
 @"        if (node === document.body) return node.tagName;"
@@ -144,7 +107,7 @@ static NSString *const kFixedSimpleJSSnippet = @"(function() {"
         NSString *fullLog = [NSString stringWithFormat:@"%@\n📍 XPath: %@\n💻 كود الضغط التلقائي:\n[webView evaluateJavaScript:@\"document.evaluate('%@', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click();\" completionHandler:nil];", textInfo, xpath, xpath];
         
         sniffer_add_log(fullLog);
-        NSLog(@"%@", fullLog);
+        NSLog(@\"%@\", fullLog);
     }
 }
 @end
@@ -172,7 +135,7 @@ static SimpleSnifferHandler *g_handler = nil;
     @try {
         if (configuration && configuration.userContentController) {
             [configuration.userContentController addScriptMessageHandler:g_handler name:@"SimpleSnifferHandler"];
-            WKUserScript *script = [[WKUserScript alloc] initWithSource:kFixedSimpleJSSnippet
+            WKUserScript *script = [[WKUserScript alloc] initWithSource:kSimpleJSSnippet
                                                           injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
                                                        forMainFrameOnly:NO];
             [configuration.userContentController addUserScript:script];
