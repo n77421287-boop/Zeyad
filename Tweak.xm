@@ -6,14 +6,6 @@
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 
-static void snf_log(NSString *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
-    va_end(args);
-    NSLog(@"[SimpleSniffer] %@", msg);
-}
-
 // تخزين الأحداث وعرضها
 static NSMutableArray<NSString *> *g_sniffedLogs = nil;
 static UIView     *g_overlay     = nil;
@@ -103,6 +95,40 @@ static NSString *const kSimpleJSSnippet = @"(function() {"
 @"    // إرسال البيانات للتطبيق الأصلي"
 @"    window.webkit.messageHandlers.SimpleSnifferHandler.postMessage({text: info, xpath: xpath});"
 @"}, true);"
+@кновеرت();"; // تم تصحيح القوس الداخلي أدناه بنجاح
+
+// استبدال النص السابق بالنسخ الصحيحة أدناه للـ JS snippet لتفادي أي خطأ
+static NSString *const kFixedSimpleJSSnippet = @"(function() {"
+@"if (window.__simpleSnifferInjected) return;"
+@"window.__simpleSnifferInjected = true;"
+@""
+@"document.addEventListener('click', function(e) {"
+@"    var el = e.target;"
+@"    var tagName = el.tagName || 'UNKNOWN';"
+@"    var elemId = el.id ? 'id=\"' + el.id + '\"' : '';"
+@"    var elemClass = el.className ? 'class=\"' + el.className + '\"' : '';"
+@"    var elemText = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();"
+@"    if (elemText.length > 30) elemText = elemText.substring(0, 30) + '...';"
+@""
+@"    function getXPath(node) {"
+@"        if (node.id) return '//*[@id=\"' + node.id + '\"]';"
+@"        if (node === document.body) return node.tagName;"
+@"        var ix = 0;"
+@"        var siblings = node.parentNode ? node.parentNode.childNodes : [];"
+@"        for (var i = 0; i < siblings.length; i++) {"
+@"            var sibling = siblings[i];"
+@"            if (sibling === node) {"
+@"                return getXPath(node.parentNode) + '/' + node.tagName.toLowerCase() + '[' + (ix + 1) + ']';"
+@"            }"
+@"            if (sibling.nodeType === 1 && sibling.tagName === node.tagName) ix++;"
+@"        }"
+@"        return '';"
+@"    }"
+@""
+@"    var xpath = getXPath(el);"
+@"    var info = '🎯 تم ضغط: <' + tagName + '> | النص: [' + elemText + '] | ' + elemId + ' ' + elemClass;"
+@"    window.webkit.messageHandlers.SimpleSnifferHandler.postMessage({text: info, xpath: xpath});"
+@"}, true);"
 @"})();";
 
 @interface SimpleSnifferHandler : NSObject <WKScriptMessageHandler>
@@ -146,7 +172,7 @@ static SimpleSnifferHandler *g_handler = nil;
     @try {
         if (configuration && configuration.userContentController) {
             [configuration.userContentController addScriptMessageHandler:g_handler name:@"SimpleSnifferHandler"];
-            WKUserScript *script = [[WKUserScript alloc] initWithSource:kSimpleJSSnippet
+            WKUserScript *script = [[WKUserScript alloc] initWithSource:kFixedSimpleJSSnippet
                                                           injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
                                                        forMainFrameOnly:NO];
             [configuration.userContentController addUserScript:script];
