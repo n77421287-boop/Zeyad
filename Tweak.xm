@@ -107,7 +107,7 @@ static NSString *const kSimpleJSSnippet = @"(function() {"
         NSString *fullLog = [NSString stringWithFormat:@"%@\n📍 XPath: %@\n💻 كود الضغط التلقائي:\n[webView evaluateJavaScript:@\"document.evaluate('%@', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click();\" completionHandler:nil];", textInfo, xpath, xpath];
         
         sniffer_add_log(fullLog);
-        NSLog(@\"%@\", fullLog);
+        NSLog(@"%@", fullLog);
     }
 }
 @end
