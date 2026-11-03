@@ -1,483 +1,163 @@
+//  SimpleWebViewSniffer.m — Direct Element Name Sniffer
+// ============================================================================
+
+#import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <AdSupport/AdSupport.h>
-#import <AppTrackingTransparency/AppTrackingTransparency.h>
-#import <Security/Security.h>
+#import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 
-extern void executeFullEnvironmentRefresh(void);
-
-// متغيرات ديناميكية بحتة تتغير كلياً في كل عملية تطهير
-static NSString *currentRandomIDFA = nil;
-static NSString *currentRandomIDFV = nil;
-static NSString *currentFakeSystemVersion = nil;
-static NSString *currentFakeModel = nil;
-static NSString *currentFakeLocalizedModel = nil;
-static NSString *currentFakeDeviceName = nil;
-static float     currentFakeBatteryLevel = 0.50f;
-static UIDeviceBatteryState currentFakeBatteryState = UIDeviceBatteryStateCharging;
-
-// --- الثوابت وإعدادات الحسابات الثلاثة ---
-static NSString * const kKeychainAccount = @"com.tempnum.virtualnumber.deviceUUID";
-static NSString * const kKeychainGroup   = @"3J96GNXKKU.*";
-static NSString * const kAccount1_UUID   = @"1A82BF91-3EA1-4CA5-AD39-593553C1E151";
-static NSString * const kAccount2_UUID   = @"2BEE80E2-E202-432B-879D-A98E2B8BC102";
-static NSString * const kAccount3_UUID   = @"3F4D0093-0103-44B6-9D43-63FBCE2A5953";
-
-static BOOL isSwitchAlertShown = NO;
-
-// --- مسار حالة التبديل ---
-static NSString *getStatePlistPath(void) {
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES);
-    NSString *libraryDirectory = [paths firstObject];
-    return [libraryDirectory stringByAppendingPathComponent:@"AccountSwitchState.plist"];
+static void snf_log(NSString *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
+    va_end(args);
+    NSLog(@"[SimpleSniffer] %@", msg);
 }
 
-// --- إدارة الـ Keychain المدمجة للحسابات ---
-static NSString *getAppCurrentUUIDFromKeychain(void) {
-    NSDictionary *query = @{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrAccount: kKeychainAccount,
-        (__bridge id)kSecAttrAccessGroup: kKeychainGroup,
-        (__bridge id)kSecReturnData: (__bridge id)kCFBooleanTrue,
-        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne
-    };
-    CFTypeRef result = NULL;
-    if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) == noErr) {
-        NSData *data = (__bridge_transfer NSData *)result;
-        return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    }
-    return nil;
-}
+// تخزين الأحداث وعرضها
+static NSMutableArray<NSString *> *g_sniffedLogs = nil;
+static UIView     *g_overlay     = nil;
+static UITextView *g_overlayText = nil;
 
-static void clearEntireKeychainAccounts(void) {
-    NSArray *secClasses = @[
-        (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecClassInternetPassword,
-        (__bridge id)kSecClassCertificate,
-        (__bridge id)kSecClassKey,
-        (__bridge id)kSecClassIdentity
-    ];
-    
-    for (id secClass in secClasses) {
-        NSDictionary *spec = @{
-            (__bridge id)kSecClass: secClass,
-            (__bridge id)kSecAttrAccessGroup: kKeychainGroup
-        };
-        SecItemDelete((__bridge CFDictionaryRef)spec);
-    }
-}
-
-static void saveUUIDToKeychain(NSString *uuidString) {
-    NSData *data = [uuidString dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary *addQuery = @{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrAccount: kKeychainAccount,
-        (__bridge id)kSecAttrAccessGroup: kKeychainGroup,
-        (__bridge id)kSecValueData: data
-    };
-    SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-}
-
-// --- محرك توليد بصمة عشوائية جديدة كلياً في كل مرة (لا ثبات أبداً) ---
-static void generateNewSpoofValues(void) {
-    currentRandomIDFA = [[NSUUID UUID] UUIDString];
-    currentRandomIDFV = [[NSUUID UUID] UUIDString];
-    
-    NSArray *majorVersions = @[@"15", @"16", @"17", @"18", @"19", @"26", @"27", @"28"];
-    NSArray *minorVersions = @[@"0", @"1", @"2", @"3", @"4", @"5", @"6"];
-    int randomMajor = arc4random_uniform((uint32_t)[majorVersions count]);
-    int randomMinor = arc4random_uniform((uint32_t)[minorVersions count]);
-    currentFakeSystemVersion = [NSString stringWithFormat:@"%@.%@", majorVersions[randomMajor], minorVersions[randomMinor]];
-    
-    NSArray *modelsList = @[@"iPhone", @"iPad", @"iPod touch"];
-    currentFakeModel = modelsList[arc4random_uniform((uint32_t)[modelsList count])];
-    currentFakeLocalizedModel = currentFakeModel;
-    
-    currentFakeDeviceName = [NSString stringWithFormat:@"iPhone-%d-%d", arc4random_uniform(89999) + 10000, arc4random_uniform(900) + 100];
-    
-    int randomBatteryPercent = arc4random_uniform(95) + 5;
-    currentFakeBatteryLevel = (float)randomBatteryPercent / 100.0f;
-    
-    NSArray *batteryStates = @[@(UIDeviceBatteryStateUnplugged), @(UIDeviceBatteryStateCharging), @(UIDeviceBatteryStateFull)];
-    currentFakeBatteryState = (UIDeviceBatteryState)[batteryStates[arc4random_uniform((uint32_t)[batteryStates count])] integerValue];
-}
-
-// --- منطق التبديل التسلسلي بين 3 حسابات (1 -> 2 -> 3 -> 1) ---
-static NSString *getNextAccountUUID(void) {
-    NSString *path = getStatePlistPath();
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-    
-    NSInteger lastAccountIndex = 1; 
-    if (dict && dict[@"LastIndex"] != nil) {
-        lastAccountIndex = [dict[@"LastIndex"] integerValue];
-    }
-    
-    NSString *nextUUID = nil;
-    NSInteger newIndex = 1;
-    
-    if (lastAccountIndex == 1) {
-        nextUUID = kAccount2_UUID;
-        newIndex = 2;
-    } else if (lastAccountIndex == 2) {
-        nextUUID = kAccount3_UUID;
-        newIndex = 3;
-    } else {
-        nextUUID = kAccount1_UUID;
-        newIndex = 1;
-    }
-    
-    NSMutableDictionary *newDict = [NSMutableDictionary dictionary];
-    newDict[@"LastIndex"] = @(newIndex);
-    newDict[@"WaitingForPointsChange"] = @YES; 
-    [newDict writeToFile:path atomically:YES];
-    
-    return nextUUID;
-}
-
-static BOOL shouldProcessPoints(NSInteger currentPoints) {
-    NSString *path = getStatePlistPath();
-    NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-    
-    if (dict && dict[@"WaitingForPointsChange"] != nil) {
-        BOOL waiting = [dict[@"WaitingForPointsChange"] boolValue];
-        if (waiting) {
-            // إيقاف التكرار فقط عندما تكون النقاط تساوي 395 عند العودة
-            if (currentPoints == 395) {
-                return NO;
-            } else {
-                NSMutableDictionary *mutableDict = [dict mutableCopy];
-                mutableDict[@"WaitingForPointsChange"] = @NO;
-                [mutableDict writeToFile:path atomically:YES];
-            }
-        }
-    }
-    return YES;
-}
-
-static void clearAllKeychainAndAddNewItem() {
-    NSArray *secClasses = @[
-        (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecClassInternetPassword,
-        (__bridge id)kSecClassCertificate,
-        (__bridge id)kSecClassKey,
-        (__bridge id)kSecClassIdentity
-    ];
-    
-    NSString *primaryAccessGroup = @"3J96GNXKKU.*";
-    
-    for (id secClass in secClasses) {
-        NSDictionary *generalQuery = @{ (__bridge id)kSecClass: secClass };
-        SecItemDelete((__bridge CFDictionaryRef)generalQuery);
-        
-        if (primaryAccessGroup && [primaryAccessGroup length] > 0) {
-            NSDictionary *groupQuery = @{
-                (__bridge id)kSecClass: secClass,
-                (__bridge id)kSecAttrAccessGroup: primaryAccessGroup
-            };
-            SecItemDelete((__bridge CFDictionaryRef)groupQuery);
-        }
-        
-        NSMutableDictionary *spec = [NSMutableDictionary dictionaryWithDictionary:@{
-            (__bridge id)kSecClass: secClass,
-            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitAll,
-            (__bridge id)kSecReturnPersistentRef: @YES
-        }];
-        if (primaryAccessGroup) spec[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-        
-        CFArrayRef result = NULL;
-        if (SecItemCopyMatching((__bridge CFDictionaryRef)spec, (CFTypeRef *)&result) == errSecSuccess) {
-            NSArray *items = (__bridge NSArray *)result;
-            for (id itemRef in items) {
-                NSDictionary *refQuery = @{ (__bridge id)kSecValueRef: itemRef };
-                SecItemDelete((__bridge CFDictionaryRef)refQuery);
-            }
-            CFRelease(result);
-        }
-    }
-    
-    NSString *serviceName = @"app.getsmscode";
-    NSString *accountName = @"tokenKey";
-    NSString *tokenValue  = @"Hv5-C9Nn_Kv4mRg-bmMw3hRn";
-    NSData *tokenData = [tokenValue dataUsingEncoding:NSUTF8StringEncoding];
-    
-    NSMutableDictionary *addQuery = [NSMutableDictionary dictionaryWithDictionary:@{
-        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: serviceName,
-        (__bridge id)kSecAttrAccount: accountName,
-        (__bridge id)kSecValueData: tokenData
-    }];
-    if (primaryAccessGroup) addQuery[(__bridge id)kSecAttrAccessGroup] = primaryAccessGroup;
-    
-    SecItemDelete((__bridge CFDictionaryRef)addQuery);
-    SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
-}
-
-// --- دالة التنظيف الشامل وتوليد خصائص عشوائية جديدة كلياً ---
-void executeFullEnvironmentRefresh() {
-    @autoreleasepool {
-        generateNewSpoofValues();
-        clearAllKeychainAndAddNewItem();
-
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        NSString *homeDir = NSHomeDirectory();
-        
-        NSError *error = nil;
-        NSArray *homeContents = [fileManager contentsOfDirectoryAtPath:homeDir error:&error];
-        NSString *statePath = getStatePlistPath();
-        
-        for (NSString *item in homeContents) {
-            NSString *fullPath = [homeDir stringByAppendingPathComponent:item];
-            if ([item isEqualToString:@"Library"]) {
-                NSString *libraryDir = [homeDir stringByAppendingPathComponent:@"Library"];
-                NSArray *libraryContents = [fileManager contentsOfDirectoryAtPath:libraryDir error:&error];
-                for (NSString *libItem in libraryContents) {
-                    NSString *libItemPath = [libraryDir stringByAppendingPathComponent:libItem];
-                    if ([libItemPath isEqualToString:statePath]) continue;
-                    [fileManager removeItemAtPath:libItemPath error:&error];
-                }
-            } else {
-                [fileManager removeItemAtPath:fullPath error:&error];
-            }
-            error = nil;
-        }
-        
-        NSString *groupDirBase = [[[homeDir stringByDeletingLastPathComponent] stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"Group Containers"];
-        if ([fileManager fileExistsAtPath:groupDirBase]) {
-            NSArray *groupFolders = [fileManager contentsOfDirectoryAtPath:groupDirBase error:nil];
-            for (NSString *groupFolder in groupFolders) {
-                NSString *groupPath = [groupDirBase stringByAppendingPathComponent:groupFolder];
-                [fileManager removeItemAtPath:groupPath error:&error];
-                error = nil;
-            }
-        }
-
-        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-        if (bundleIdentifier) {
-            [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:bundleIdentifier];
-            NSString *libraryPrefsPath = [homeDir stringByAppendingPathComponent:@"Library/Preferences"];
-            NSArray *prefFiles = [fileManager contentsOfDirectoryAtPath:libraryPrefsPath error:nil];
-            for (NSString *file in prefFiles) {
-                if ([file containsString:bundleIdentifier] || [file hasSuffix:@".plist"]) {
-                    NSString *filePath = [libraryPrefsPath stringByAppendingPathComponent:file];
-                    [fileManager removeItemAtPath:filePath error:nil];
-                }
-            }
-        }
-        
-        [[NSUserDefaults standardUserDefaults] synchronize];
-    }
-}
-
-// --- تنفيذ التبديل والتنبيه ---
-static void performAccountSwitchAndAlert(void) {
-    if (isSwitchAlertShown) return;
-    isSwitchAlertShown = YES;
-    
-    NSString *nextUUID = getNextAccountUUID();
-    executeFullEnvironmentRefresh();
-    clearEntireKeychainAccounts();
-    saveUUIDToKeychain(nextUUID);
+static void sniffer_add_log(NSString *logText) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        g_sniffedLogs = [NSMutableArray array];
+    });
     
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *activeWindow = nil;
-        if (@available(iOS 13.0, *)) {
+        [g_sniffedLogs insertObject:logText atIndex:0];
+        if (g_sniffedLogs.count > 30) [g_sniffedLogs removeLastObject];
+        
+        if (g_overlayText) {
+            g_overlayText.text = [g_sniffedLogs componentsJoinedByString:@"\n----------------------------------------\n"];
+        }
+    });
+}
+
+// السكربت الذي سيراقب الـ Click ويعطينا الاسم بوضوح تام
+static NSString *const kSimpleJSSnippet = @"(function() {"
+@"if (window.__simpleSnifferInjected) return;"
+@"window.__simpleSnifferInjected = true;"
+@""
+@"document.addEventListener('click', function(e) {"
+@"    var el = e.target;"
+@"    var tagName = el.tagName || 'UNKNOWN';"
+@"    var elemId = el.id ? 'id=\"' + el.id + '\"' : '';"
+@"    var elemClass = el.className ? 'class=\"' + el.className + '\"' : '';"
+@"    var elemText = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();"
+@"    if (elemText.length > 30) elemText = elemText.substring(0, 30) + '...';"
+@""
+@"    // بناء XPath دقيق للزر الضغوط"
+@"    function getXPath(node) {"
+@"        if (node.id) return '//*[@id=\"' + node.id + '\"]';"
+@"        if (node === document.body) return node.tagName;"
+@"        var ix = 0;"
+@"        var siblings = node.parentNode ? node.parentNode.childNodes : [];"
+@"        for (var i = 0; i < siblings.length; i++) {"
+@"            var sibling = siblings[i];"
+@"            if (sibling === node) {"
+@"                return getXPath(node.parentNode) + '/' + node.tagName.toLowerCase() + '[' + (ix + 1) + ']';"
+@"            }"
+@"            if (sibling.nodeType === 1 && sibling.tagName === node.tagName) ix++;"
+@"        }"
+@"        return '';"
+@"    }"
+@""
+@"    var xpath = getXPath(el);"
+@"    var info = '🎯 تم ضغط: <' + tagName + '> | النص: [' + elemText + '] | ' + elemId + ' ' + elemClass;"
+@""
+@"    // إرسال البيانات للتطبيق الأصلي"
+@"    window.webkit.messageHandlers.SimpleSnifferHandler.postMessage({text: info, xpath: xpath});"
+@"}, true);"
+@"})();";
+
+@interface SimpleSnifferHandler : NSObject <WKScriptMessageHandler>
+@end
+
+@implementation SimpleSnifferHandler
+- (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
+    if ([message.name isEqualToString:@"SimpleSnifferHandler"]) {
+        NSDictionary *body = message.body;
+        NSString *textInfo = body[@"text"];
+        NSString *xpath = body[@"xpath"];
+        
+        NSString *fullLog = [NSString stringWithFormat:@"%@\n📍 XPath: %@\n💻 كود الضغط التلقائي:\n[webView evaluateJavaScript:@\"document.evaluate('%@', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click();\" completionHandler:nil];", textInfo, xpath, xpath];
+        
+        sniffer_add_log(fullLog);
+        // طباعة أيضاً في الكونصول للتأكد
+        NSLog(@"%@", fullLog);
+    }
+}
+@end
+
+@interface WKWebView (SimpleSnifferHook)
+@end
+
+@implementation WKWebView (SimpleSnifferHook)
+
+static SimpleSnifferHandler *g_handler = nil;
+
++ (void)load {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        g_handler = [SimpleSnifferHandler new];
+        Class cls = [WKWebView class];
+        SEL sel = @selector(initWithFrame:configuration:);
+        Method m1 = class_getInstanceMethod(cls, sel);
+        Method m2 = class_getInstanceMethod(cls, @selector(simple_initWithFrame:configuration:));
+        if (m1 && m2) method_exchangeImplementations(m1, m2);
+    });
+}
+
+- (instancetype)simple_initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)configuration {
+    @try {
+        if (configuration && configuration.userContentController) {
+            [configuration.userContentController addScriptMessageHandler:g_handler name:@"SimpleSnifferHandler"];
+            WKUserScript *script = [[WKUserScript alloc] initWithSource:kSimpleJSSnippet
+                                                          injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                                       forMainFrameOnly:NO];
+            [configuration.userContentController addUserScript:script];
+        }
+    } @catch (__unused NSException *e) {}
+    
+    return [self simple_initWithFrame:frame configuration:configuration];
+}
+
+@end
+
+// بناء الشاشة العائمة لعرض النتائج فوراً
+__attribute__((constructor))
+static void SimpleBootstrap(void) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        @try {
+            UIWindow *keyWindow = nil;
             for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-                    UIWindowScene *windowScene = (UIWindowScene *)scene;
-                    for (UIWindow *w in windowScene.windows) {
-                        if (w.isKeyWindow) { activeWindow = w; break; }
+                if ([scene isKindOfClass:[UIWindowScene class]]) {
+                    for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                        if (w.isKeyWindow) { keyWindow = w; break; }
                     }
                 }
             }
-        }
-        
-        UIViewController *rootVC = activeWindow ? activeWindow.rootViewController : nil;
-        while (rootVC.presentedViewController) { rootVC = rootVC.presentedViewController; }
-        
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"🔄 تم تبديل الحساب (من أصل 3) وتوليد بصمة جديدة"
-                                                                   message:@"تم الوصول إلى 395 نقطة وتطهير البيانات بنجاح.\nيرجى إغلاق التطبيق وفتحه مجدداً."
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"حسناً" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            exit(0);
-        }]];
-        
-        if (rootVC) [rootVC presentViewController:alert animated:YES completion:nil];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            exit(0);
-        });
-    });
-}
+            if (!keyWindow) keyWindow = [UIApplication sharedApplication].keyWindow;
+            if (!keyWindow) return;
 
-static void checkAndEnforceValidAccount(void) {
-    NSString *currentUUID = getAppCurrentUUIDFromKeychain();
-    if (![currentUUID isEqualToString:kAccount1_UUID] && 
-        ![currentUUID isEqualToString:kAccount2_UUID] && 
-        ![currentUUID isEqualToString:kAccount3_UUID]) {
-        clearEntireKeychainAccounts();
-        saveUUIDToKeychain(kAccount1_UUID);
-        
-        NSString *path = getStatePlistPath();
-        NSDictionary *dict = @{ @"LastIndex": @(1), @"WaitingForPointsChange": @NO };
-        [dict writeToFile:path atomically:YES];
-    }
-}
-
-// --- معالجة فحص النقاط بشكل خفي تماماً وسريع في الخلفية ---
-static void processStealthPointsAsync(NSData *data) {
-    if (!data) return;
-    
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        checkAndEnforceValidAccount();
-
-        NSError *jsonError = nil;
-        NSDictionary *jsonDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
-        if (!jsonError && [jsonDict isKindOfClass:[NSDictionary class]]) {
-            NSDictionary *dataObj = jsonDict[@"data"];
-            NSDictionary *pointsData = dataObj[@"pointsData"];
-            NSNumber *pointsVal = pointsData[@"points"];
+            g_overlay = [[UIView alloc] initWithFrame:CGRectMake(10, 40, keyWindow.bounds.size.width - 20, 260)];
+            g_overlay.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.95];
+            g_overlay.layer.cornerRadius = 8;
+            g_overlay.layer.borderWidth = 1.5;
+            g_overlay.layer.borderColor = [UIColor yellowColor].CGColor;
             
-            if (pointsVal) {
-                NSInteger currentPoints = [pointsVal integerValue];
-                if (!shouldProcessPoints(currentPoints)) return;
-                
-                // التبديل والتطهير فقط عند وصول النقاط إلى 395 أو أكثر
-                if (currentPoints >= 395) {
-                    performAccountSwitchAndAlert();
-                }
-            }
-        }
-    });
-}
-
-// --- بروتوكول الشبكة الخفي فائق السرعة ---
-@interface StealthNetworkProtocol : NSURLProtocol
-@end
-
-@implementation StealthNetworkProtocol
-
-+ (BOOL)canInitWithRequest:(NSURLRequest *)request {
-    NSString *url = request.URL.absoluteString;
-    if (url && [url containsString:@"tn.maildisposable.com/api/v1/users/additional/points/data"]) {
-        if ([NSURLProtocol propertyForKey:@"StealthHandledKey" inRequest:request] == nil) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-+ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
-    NSMutableURLRequest *mutableReq = [request mutableCopy];
-    [NSURLProtocol setProperty:@YES forKey:@"StealthHandledKey" inRequest:mutableReq];
-    return mutableReq;
-}
-
-- (void)startLoading {
-    NSMutableURLRequest *newReq = [self.request mutableCopy];
-    [NSURLProtocol setProperty:@YES forKey:@"StealthHandledKey" inRequest:newReq];
-    
-    NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:config];
-    
-    NSURLSessionDataTask *task = [session dataTaskWithRequest:newReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        
-        if (error) {
-            [self.client URLProtocol:self didFailWithError:error];
-            return;
-        }
-        
-        if (response) {
-            [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageAllowed];
-        }
-        
-        if (data) {
-            [self.client URLProtocol:self didLoadData:data];
-            processStealthPointsAsync(data);
-        }
-        
-        [self.client URLProtocolDidFinishLoading:self];
-    }];
-    
-    [task resume];
-}
-
-- (void)stopLoading {}
-
-@end
-
-// --- هوكس التزوير الديناميكية بالكامل لـ UIDevice ---
-%hook UIDevice
-- (NSUUID *)identifierForVendor {
-    if (currentRandomIDFV) {
-        return [[NSUUID alloc] initWithUUIDString:currentRandomIDFV];
-    }
-    return %orig;
-}
-
-- (NSString *)systemVersion {
-    if (currentFakeSystemVersion) { return currentFakeSystemVersion; }
-    return %orig;
-}
-
-- (NSString *)model {
-    if (currentFakeModel) { return currentFakeModel; }
-    return %orig;
-}
-
-- (NSString *)localizedModel {
-    if (currentFakeLocalizedModel) { return currentFakeLocalizedModel; }
-    return %orig;
-}
-
-- (NSString *)name {
-    if (currentFakeDeviceName) { return currentFakeDeviceName; }
-    return %orig;
-}
-
-- (float)batteryLevel { return currentFakeBatteryLevel; }
-- (UIDeviceBatteryState)batteryState { return currentFakeBatteryState; }
-- (BOOL)isBatteryMonitoringEnabled { return YES; }
-%end
-
-// --- هوك الـ IDFA لـ ASIdentifierManager ---
-%hook ASIdentifierManager
-- (NSUUID *)advertisingIdentifier {
-    if (currentRandomIDFA) {
-        return [[NSUUID alloc] initWithUUIDString:currentRandomIDFA];
-    }
-    return %orig;
-}
-%end
-
-// --- إدراج البروتوكول الخفي تلقائياً ---
-%hook NSURLSessionConfiguration
-+ (NSURLSessionConfiguration *)defaultSessionConfiguration {
-    NSURLSessionConfiguration *config = %orig;
-    NSMutableArray *protocols = [config.protocolClasses mutableCopy];
-    if (!protocols) protocols = [NSMutableArray array];
-    if (![protocols containsObject:[StealthNetworkProtocol class]]) {
-        [protocols insertObject:[StealthNetworkProtocol class] atIndex:0];
-        config.protocolClasses = protocols;
-    }
-    return config;
-}
-
-+ (NSURLSessionConfiguration *)ephemeralSessionConfiguration {
-    NSURLSessionConfiguration *config = %orig;
-    NSMutableArray *protocols = [config.protocolClasses mutableCopy];
-    if (!protocols) protocols = [NSMutableArray array];
-    if (![protocols containsObject:[StealthNetworkProtocol class]]) {
-        [protocols insertObject:[StealthNetworkProtocol class] atIndex:0];
-        config.protocolClasses = protocols;
-    }
-    return config;
-}
-%end
-
-%ctor {
-    generateNewSpoofValues();
-    checkAndEnforceValidAccount();
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [NSURLProtocol registerClass:[StealthNetworkProtocol class]];
+            g_overlayText = [[UITextView alloc] initWithFrame:CGRectMake(5, 5, g_overlay.bounds.size.width - 10, g_overlay.bounds.size.height - 10)];
+            g_overlayText.backgroundColor = [UIColor clearColor];
+            g_overlayText.textColor = [UIColor yellowColor];
+            g_overlayText.font = [UIFont fontWithName:@"Courier-Bold" size:9.0] ?: [UIFont systemFontOfSize:9.0];
+            g_overlayText.editable = NO;
+            g_overlayText.text = @"[+] اضغط على أي زر بالمنصة ليظهر اسمه هنا...\n";
+            
+            [g_overlay addSubview:g_overlayText];
+            [keyWindow addSubview:g_overlay];
+            [keyWindow bringSubviewToFront:g_overlay];
+        } @catch (__unused NSException *e) {}
     });
 }
