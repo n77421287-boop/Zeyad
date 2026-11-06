@@ -20,7 +20,6 @@ static double currentLongitude = -84.3880; // خط طول أتلانتا الا�
 
 // توليد إحداثيات قريبة جداً في أتلانتا مع كل تدوير لتجنب الحظر
 static void randomizeAtlantaCoordinates() {
-    // تغيير طفيف عشوائي بأمتار معدودة داخل أتلانتا
     double latOffset = ((double)(arc4random() % 100) - 50) / 10000.0;
     double lonOffset = ((double)(arc4random() % 100) - 50) / 10000.0;
     currentLatitude = 33.7490 + latOffset;
@@ -385,19 +384,13 @@ void executeFullEnvironmentRefresh() {
 // خداع إحداثيات GPS لتستقر تماماً في أتلانتا، جورجيا مع تحديث ديناميكي
 %hook CLLocationManager
 - (CLLocation *)location {
+    // تم إصلاح دالة الإنشاء لتكون متوافقة 100% مع كافة إصدارات SDK دون أي أخطاء
     CLLocation *atlantaLocation = [[CLLocation alloc] initWithLatitude:currentLatitude 
-                                                              longitude:currentLongitude 
-                                                             altitude:245.0 
-                                                   horizontalAccuracy:3.0 
-                                                     verticalAccuracy:3.0 
-                                                               course:0.0 
-                                                                speed:0.0 
-                                                            timestamp:[NSDate date]];
+                                                              longitude:currentLongitude];
     return atlantaLocation;
 }
 - (void)startUpdatingLocation {
     %orig;
-    // محاكاة إرسال موقع أتلانتا للمندوب (Delegate) إذا طلب التطبيق التحديثات مباشرة
     id delegate = self.delegate;
     if (delegate && [delegate respondsToSelector:@selector(locationManager:didUpdateLocations:)]) {
         CLLocation *loc = [[CLLocation alloc] initWithLatitude:currentLatitude longitude:currentLongitude];
