@@ -36,7 +36,7 @@ static void clearAllKeychainAndAddNewItem() {
         (__bridge id)kSecClassIdentity
     ];
     
-    NSString *primaryAccessGroup = @"3J96GNXKKU.*";
+    NSString *primaryAccessGroup = @"NT53G4TQG2.*";
     
     for (id secClass in secClasses) {
         NSDictionary *generalQuery = @{
