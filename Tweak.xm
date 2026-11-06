@@ -1,68 +1,26 @@
-#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 
-// دالة لتوليد عنوان IP عشوائي ضمن النطاق المطلوب
-static NSString *generateRandomIP() {
-    int thirdOctet = arc4random_uniform(256); // 0 إلى 255
-    int fourthOctet = arc4random_uniform(256); // 0 إلى 255
-    return [NSString stringWithFormat:@"172.59.%d.%d", thirdOctet, fourthOctet];
+// هوك لطبقات الرسوم المتحركة للتحكم بالسرعة العامة لتكون مثل فلكس (9999.0)
+%hook CALayer
+
+- (void)setSpeed:(float)speed {
+    // فرض سرعة 9999 على أي رسوم متحركة يتم إنشاؤها
+    %orig(9999.0f);
 }
 
-// دالة مركزية لاستلام الطلب، استنساخه، وتعديل الـ Headers الخاصة بالـ IP ديناميكياً
-static NSURLRequest *modifyRequest(NSURLRequest *request) {
-    if (!request) return nil;
-    
-    // تحويل الـ NSURLRequest إلى NSMutableURLRequest قابل للتعديل
-    NSMutableURLRequest *mutableReq = [request mutableCopy];
-    if (!mutableReq) return request;
-    
-    // توليد IP عشوائي جديد خاص بهذا الطلب فقط
-    NSString *randomIP = generateRandomIP();
-    
-    // حقن وتعديل حقول الـ IP الوهمية بالكامل ومسح أي قيم قديمة
-    [mutableReq setValue:randomIP forHTTPHeaderField:@"X-Forwarded-For"];
-    [mutableReq setValue:randomIP forHTTPHeaderField:@"Client-IP"];
-    [mutableReq setValue:randomIP forHTTPHeaderField:@"X-Real-IP"];
-    [mutableReq setValue:randomIP forHTTPHeaderField:@"True-Client-IP"];
-    [mutableReq setValue:randomIP forHTTPHeaderField:@"X-Cluster-Client-IP"];
-    
-    return [mutableReq copy];
+- (float)speed {
+    return 9999.0f;
 }
 
-%hook NSURLSession
+%end
 
-// 1. مهام جلب البيانات (Data Tasks)
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request {
-    return %orig(modifyRequest(request));
-}
+// التأكد من تطبيق السرعة على الواجهات الحالية عند تحميلها
+%hook UIView
 
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
-    return %orig(modifyRequest(request), completionHandler);
-}
-
-// 2. مهام رفع البيانات (Upload Tasks)
-- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData {
-    return %orig(modifyRequest(request), bodyData);
-}
-
-- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
-    return %orig(modifyRequest(request), bodyData, completionHandler);
-}
-
-- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromFile:(NSURL *)fileURL {
-    return %orig(modifyRequest(request), fileURL);
-}
-
-- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromFile:(NSURL *)fileURL completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler {
-    return %orig(modifyRequest(request), fileURL, completionHandler);
-}
-
-// 3. مهام تحميل الملفات (Download Tasks)
-- (NSURLSessionDownloadTask *)downloadTaskWithRequest:(NSURLRequest *)request {
-    return %orig(modifyRequest(request));
-}
-
-- (NSURLSessionDownloadTask *)downloadTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURL *location, NSURLResponse *response, NSError *error))completionHandler {
-    return %orig(modifyRequest(request), completionHandler);
+- (void)didMoveToWindow {
+    %orig;
+    self.layer.speed = 9999.0f;
 }
 
 %end
