@@ -36,18 +36,14 @@ static void initializeDataIfNeeded() {
     }
 }
 
-// دالة حديثة وآمنة لجلب النافذة الرئيسية دون استخدام keyWindow الملغاة
-static UIWindow *getCurrentWindow() {
-    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (scene.activationState == UISceneActivationStateForegroundActive) {
-            for (UIWindow *window in scene.windows) {
-                if (window.isKeyWindow) {
-                    return window;
-                }
-            }
+static UIWindow *getFallbackWindow() {
+    NSArray *windows = [[UIApplication sharedApplication] windows];
+    for (UIWindow *window in windows) {
+        if (window.isKeyWindow) {
+            return window;
         }
     }
-    return [[[UIApplication sharedApplication] windows] firstObject];
+    return [windows lastObject];
 }
 
 static void clearAndBlockKeychain() {
@@ -94,12 +90,12 @@ static void switchToNextAccount() {
     [[NSFileManager defaultManager] removeItemAtPath:tmpPath error:nil];
     
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *keyWindow = getCurrentWindow();
-        if (keyWindow) {
-            UIView *flashView = [[UIView alloc] initWithFrame:keyWindow.bounds];
+        UIWindow *win = getFallbackWindow();
+        if (win) {
+            UIView *flashView = [[UIView alloc] initWithFrame:win.bounds];
             flashView.backgroundColor = [UIColor blackColor];
             flashView.alpha = 0.0;
-            [keyWindow addSubview:flashView];
+            [win addSubview:flashView];
             
             [UIView animateWithDuration:0.15 animations:^{
                 flashView.alpha = 0.4;
@@ -108,36 +104,23 @@ static void switchToNextAccount() {
                     flashView.alpha = 0.0;
                 } completion:^(BOOL finished2) {
                     [flashView removeFromSuperview];
-                    
-                    UIViewController *oldRoot = keyWindow.rootViewController;
-                    keyWindow.rootViewController = oldRoot;
+                    UIViewController *oldRoot = win.rootViewController;
+                    win.rootViewController = oldRoot;
                 }];
             }];
         }
     });
 }
 
-@interface FloatingButtonWindow : UIWindow
-@end
-
-@implementation FloatingButtonWindow
-- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *btn = [self viewWithTag:9988];
-    CGPoint btnPoint = [self convertPoint:point toView:btn];
-    if ([btn pointInside:btnPoint withEvent:event]) {
-        return YES;
-    }
-    return NO;
-}
-@end
-
+// مدير الزر العائم المباشر والقوي
 @interface AccountSwitcherButtonManager : NSObject
-@property (strong, nonatomic) FloatingButtonWindow *floatingWindow;
 + (instancetype)sharedInstance;
 - (void)setupFloatingButton;
 @end
 
-@implementation AccountSwitcherButtonManager
+@implementation AccountSwitcherButtonManager {
+    UIButton *floatingButton;
+}
 
 + (instancetype)sharedInstance {
     static AccountSwitcherButtonManager *sharedInstance = nil;
@@ -150,38 +133,33 @@ static void switchToNextAccount() {
 
 - (void)setupFloatingButton {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.floatingWindow) return;
+        if (floatingButton && [floatingButton superview]) return;
         
-        CGRect frame = CGRectMake([UIScreen mainScreen].bounds.size.width - 75, 45, 65, 32);
-        self.floatingWindow = [[FloatingButtonWindow alloc] initWithFrame:frame];
-        self.floatingWindow.windowLevel = UIWindowLevelAlert + 9999;
-        self.floatingWindow.hidden = NO;
-        self.floatingWindow.backgroundColor = [UIColor clearColor];
+        UIWindow *targetWindow = getFallbackWindow();
+        if (!targetWindow) return;
         
-        UIViewController *vc = [[UIViewController alloc] init];
-        vc.view.backgroundColor = [UIColor clearColor];
-        
-        UIButton *floatingButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        floatingButton.frame = vc.view.bounds;
-        floatingButton.tag = 9988;
+        // إنشاء الزرمباشرة ووضعه فوق أعلى واجهة رئيسية متاحة لضمان ظهوره الفوري
+        CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+        floatingButton = [UIButton buttonWithType:UIButtonTypeCustom];
+        floatingButton.frame = CGRectMake(screenWidth - 75, 45, 65, 32);
         [floatingButton setTitle:@"🔄 حساب" forState:UIControlStateNormal];
         [floatingButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
         floatingButton.titleLabel.font = [UIFont boldSystemFontOfSize:11];
-        floatingButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.48 blue:1.0 alpha:0.9];
+        floatingButton.backgroundColor = [UIColor colorWithRed:0.0 green:0.48 blue:1.0 alpha:0.95];
         floatingButton.layer.cornerRadius = 8;
         floatingButton.layer.shadowColor = [[UIColor blackColor] CGColor];
-        floatingButton.layer.shadowOpacity = 0.4;
+        floatingButton.layer.shadowOpacity = 0.5;
         floatingButton.layer.shadowOffset = CGSizeMake(0, 2);
         
         [floatingButton addTarget:self action:@selector(buttonTapped) forControlEvents:UIControlEventTouchUpInside];
         
-        [vc.view addSubview:floatingButton];
-        self.floatingWindow.rootViewController = vc;
-        [self.floatingWindow makeKeyAndVisible];
-        
-        UIWindow *mainWin = getCurrentWindow();
-        if (mainWin && mainWin != self.floatingWindow) {
-            [mainWin makeKeyWindow];
+        // البحث عن الـ RootViewController أو الـ View العلوي لإضافة الزر عليه مباشرة
+        UIViewController *rootVC = targetWindow.rootViewController;
+        if (rootVC && rootVC.view) {
+            [rootVC.view addSubview:floatingButton];
+            [rootVC.view bringSubviewToFront:floatingButton];
+        } else {
+            [targetWindow addSubview:floatingButton];
         }
     });
 }
@@ -203,11 +181,17 @@ static void switchToNextAccount() {
         [defaults synchronize];
     }
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // محاولة إظهار الزر بعدة فترات زمنية لضمان عمله مهما كانت سرعة إقلاع التطبيق
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[AccountSwitcherButtonManager sharedInstance] setupFloatingButton];
     });
     
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIWindowDidBecomeVisibleNotification
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[AccountSwitcherButtonManager sharedInstance] setupFloatingButton];
+    });
+    
+    // مراقبة أي تغييرات في واجهات التطبيق لإعادة فرض ظهور الزر
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
