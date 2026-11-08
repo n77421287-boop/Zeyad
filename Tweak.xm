@@ -36,6 +36,20 @@ static void initializeDataIfNeeded() {
     }
 }
 
+// دالة حديثة وآمنة لجلب النافذة الرئيسية دون استخدام keyWindow الملغاة
+static UIWindow *getCurrentWindow() {
+    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (scene.activationState == UISceneActivationStateForegroundActive) {
+            for (UIWindow *window in scene.windows) {
+                if (window.isKeyWindow) {
+                    return window;
+                }
+            }
+        }
+    }
+    return [[[UIApplication sharedApplication] windows] firstObject];
+}
+
 static void clearAndBlockKeychain() {
     NSArray *secClasses = @[
         (__bridge id)kSecClassGenericPassword,
@@ -80,7 +94,7 @@ static void switchToNextAccount() {
     [[NSFileManager defaultManager] removeItemAtPath:tmpPath error:nil];
     
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+        UIWindow *keyWindow = getCurrentWindow();
         if (keyWindow) {
             UIView *flashView = [[UIView alloc] initWithFrame:keyWindow.bounds];
             flashView.backgroundColor = [UIColor blackColor];
@@ -165,7 +179,7 @@ static void switchToNextAccount() {
         self.floatingWindow.rootViewController = vc;
         [self.floatingWindow makeKeyAndVisible];
         
-        UIWindow *mainWin = [[[UIApplication sharedApplication] windows] firstObject];
+        UIWindow *mainWin = getCurrentWindow();
         if (mainWin && mainWin != self.floatingWindow) {
             [mainWin makeKeyWindow];
         }
